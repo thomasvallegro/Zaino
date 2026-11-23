@@ -4,14 +4,20 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-title" content="Zaino">
+  <link rel="apple-touch-icon" href="icona.png">
+  <link rel="icon" href="icona.png">
   <title>Zaino</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- Barra in alto: titolo della schermata e pulsante "indietro" -->
-  <header class="barra">
-    <a id="indietro" class="indietro" href="#/" hidden>‹ Indietro</a>
-    <h1 id="titolo">Zaino</h1>
+  <!-- Barra di navigazione in stile iOS: indietro · titolo piccolo · azione -->
+  <header class="nav">
+    <div class="nav-sx"><a id="indietro" class="link-nav" href="#/" hidden></a></div>
+    <div class="nav-titolo" id="nav-titolo"></div>
+    <div class="nav-dx" id="nav-dx"></div>
   </header>
 
   <!-- Avviso "tasca attiva" (dopo aver letto il tag di una tasca) -->
@@ -20,15 +26,17 @@
   <!-- Qui JavaScript disegna la schermata corrente -->
   <main id="app"></main>
 
-  <!-- Messaggio temporaneo (es. "Penna → Tasca frontale") -->
+  <!-- Messaggio temporaneo -->
   <div id="toast" class="toast" hidden></div>
 
-  <!-- Menu in basso -->
-  <nav class="menu">
-    <a href="#/" data-sezione="zaini">🎒 Zaini</a>
-    <a href="#/inventario" data-sezione="inventario">📦 Inventario</a>
-    <a href="#/impostazioni" data-sezione="impostazioni">⚙️ Backup</a>
-  </nav>
+  <!-- Barra delle schede in basso -->
+  <nav class="tabbar" id="tabbar"></nav>
+
+  <!-- Pannello che sale dal basso (creazione / modifica) -->
+  <dialog id="sheet" class="sheet"><div class="sheet-corpo"></div></dialog>
+
+  <!-- Richiesta di conferma (es. "Eliminare?") -->
+  <dialog id="conferma" class="sheet azione"><div class="sheet-corpo"></div></dialog>
 
   <script src="app.js"></script>
 </body>

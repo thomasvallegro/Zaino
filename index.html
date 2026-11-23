@@ -7,6 +7,10 @@
   <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-title" content="Zaino">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icona.png">
   <link rel="icon" href="icona.png">
   <title>Zaino</title>
@@ -19,6 +23,9 @@
     <div class="nav-titolo" id="nav-titolo"></div>
     <div class="nav-dx" id="nav-dx"></div>
   </header>
+
+  <!-- Stato della sincronizzazione (offline / salvataggio) -->
+  <div id="sync" class="sync" hidden></div>
 
   <!-- Avviso "tasca attiva" (dopo aver letto il tag di una tasca) -->
   <div id="tasca-attiva" class="banner" hidden></div>
@@ -38,6 +45,6 @@
   <!-- Richiesta di conferma (es. "Eliminare?") -->
   <dialog id="conferma" class="sheet azione"><div class="sheet-corpo"></div></dialog>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

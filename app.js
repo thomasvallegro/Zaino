@@ -1,13 +1,19 @@
-"use strict";
+/* =========================================================
+   ZAINO · logica dell'app
+   I dati stanno su Firebase (vedi db.js): così Safari (aperto
+   dai tag NFC) e la web app sulla schermata Home vedono lo
+   stesso inventario.
+   ========================================================= */
+
+import * as cloud from "./db.js";
 
 /* =========================================================
    1. DATI
-   L'inventario è un unico oggetto JavaScript, salvato in
-   localStorage (l'archivio di Safari) come testo JSON.
-   Le foto sono più pesanti: vanno in IndexedDB (sezione 2).
+   "dati" è una copia in memoria del database: viene aggiornata
+   in tempo reale da Firebase. Ogni modifica cambia subito la copia
+   (così l'interfaccia risponde all'istante) e la invia al database.
    ========================================================= */
 
-const CHIAVE = "zaino-dati-v1";
 const DURATA_TASCA_ATTIVA = 2 * 60 * 1000; // 2 minuti, in millisecondi
 
 function datiVuoti() {
@@ -15,32 +21,24 @@ function datiVuoti() {
     zaini: [],   // { id, nome }
     tasche: [],  // { id, nome, zainoId }
     oggetti: [], // { id, nome, tascaId, ultimaTascaId }  tascaId = null → "fuori"
-    tascaAttiva: null, // { id, scade } dopo aver letto il tag di una tasca
-    impostazioni: { rimuoviSfondo: true }
+    tascaAttiva: null // { tascaId, scade } dopo aver letto il tag di una tasca
   };
 }
 
-function carica() {
-  try {
-    const testo = localStorage.getItem(CHIAVE);
-    if (testo) {
-      const d = Object.assign(datiVuoti(), JSON.parse(testo));
-      d.impostazioni = Object.assign(datiVuoti().impostazioni, d.impostazioni);
-      return d;
-    }
-  } catch (e) { /* archivio non disponibile o dati rovinati: si parte vuoti */ }
-  return datiVuoti();
-}
+let dati = datiVuoti();
+let utente;            // undefined = non ancora noto, null = non collegato
+let caricato = false;  // true quando i dati sono arrivati dal database
+let smettiDiAscoltare = null;
 
-function salva() {
-  try {
-    localStorage.setItem(CHIAVE, JSON.stringify(dati));
-  } catch (e) {
-    mostraToast("Errore: impossibile salvare i dati");
-  }
+// Impostazioni di questo dispositivo (non sincronizzate)
+const CHIAVE_IMPOSTAZIONI = "zaino-impostazioni";
+const impostazioni = (() => {
+  try { return Object.assign({ rimuoviSfondo: true }, JSON.parse(localStorage.getItem(CHIAVE_IMPOSTAZIONI))); }
+  catch (e) { return { rimuoviSfondo: true }; }
+})();
+function salvaImpostazioni() {
+  try { localStorage.setItem(CHIAVE_IMPOSTAZIONI, JSON.stringify(impostazioni)); } catch (e) {}
 }
-
-let dati = carica();
 
 // Un id breve e (praticamente) unico, es. "lq3k9x2a7f"
 function nuovoId() {
@@ -71,43 +69,70 @@ function posizione(oggetto) {
   return tasca ? nomeTasca(tasca) : "Fuori";
 }
 
+/* ---------- Invio al database ----------
+   Ogni scrittura viene "registrata" per mostrare lo stato
+   della sincronizzazione (es. "Offline") e gli eventuali errori. */
+let scrittureInCorso = 0;
+
+function registra(promessa) {
+  scrittureInCorso++;
+  aggiornaSync();
+  promessa
+    .catch(e => { console.error(e); mostraToast("Errore di salvataggio: " + (e.code || e.message)); })
+    .finally(() => { scrittureInCorso--; aggiornaSync(); });
+  return promessa;
+}
+const salvaDoc   = (collezione, elemento) => registra(cloud.scrivi(utente.uid, collezione, elemento));
+const eliminaDoc = (collezione, id) => registra(cloud.cancella(utente.uid, collezione, id));
+const inBlocco   = operazioni => registra(cloud.inBlocco(utente.uid, operazioni));
+
 /* ---------- Modifiche ---------- */
 function creaZaino(nome) {
   const zaino = { id: nuovoId(), nome };
   dati.zaini.push(zaino);
-  salva();
+  salvaDoc("zaini", zaino);
   return zaino;
 }
 
 function eliminaZaino(id) {
-  tascheDi(id).forEach(t => eliminaTasca(t.id));
+  const operazioni = tascheDi(id).flatMap(t => operazioniEliminaTasca(t.id));
   dati.zaini = dati.zaini.filter(z => z.id !== id);
-  salva();
-  impostaFoto(id, null);
+  operazioni.push(["delete", "zaini", id]);
+  if (urlFoto.has(id)) { urlFoto.delete(id); operazioni.push(["delete", "foto", id]); }
+  inBlocco(operazioni);
 }
 
 function creaTasca(zainoId, nome) {
   const tasca = { id: nuovoId(), nome, zainoId };
   dati.tasche.push(tasca);
-  salva();
+  salvaDoc("tasche", tasca);
   return tasca;
 }
 
-// Eliminando una tasca, i suoi oggetti finiscono "fuori"
-function eliminaTasca(id) {
+// Eliminando una tasca, i suoi oggetti finiscono "fuori".
+// Restituisce l'elenco delle scritture da fare sul database.
+function operazioniEliminaTasca(id) {
+  const operazioni = [];
   dati.oggetti.forEach(o => {
+    if (o.tascaId !== id && o.ultimaTascaId !== id) return;
     if (o.tascaId === id) o.tascaId = null;
     if (o.ultimaTascaId === id) o.ultimaTascaId = null;
+    operazioni.push(["set", "oggetti", o]);
   });
-  if (dati.tascaAttiva && dati.tascaAttiva.id === id) dati.tascaAttiva = null;
+  if (dati.tascaAttiva && dati.tascaAttiva.tascaId === id) {
+    dati.tascaAttiva = null;
+    operazioni.push(["delete", "stato", "tascaAttiva"]);
+  }
   dati.tasche = dati.tasche.filter(t => t.id !== id);
-  salva();
+  operazioni.push(["delete", "tasche", id]);
+  return operazioni;
 }
+const eliminaTasca = id => inBlocco(operazioniEliminaTasca(id));
 
 function creaOggetto(nome, tascaId = null) {
   const oggetto = { id: nuovoId(), nome, tascaId, ultimaTascaId: tascaId };
   dati.oggetti.push(oggetto);
-  salva();
+  salvaDoc("oggetti", oggetto);
   return oggetto;
 }
 
@@ -115,72 +140,61 @@ function creaOggetto(nome, tascaId = null) {
 function sposta(oggetto, tascaId) {
   oggetto.tascaId = tascaId;
   if (tascaId) oggetto.ultimaTascaId = tascaId; // ricorda dove stava
-  salva();
+  return salvaDoc("oggetti", oggetto);
 }
 
 function eliminaOggetto(id) {
   dati.oggetti = dati.oggetti.filter(o => o.id !== id);
-  salva();
-  impostaFoto(id, null);
+  const operazioni = [["delete", "oggetti", id]];
+  if (urlFoto.has(id)) { urlFoto.delete(id); operazioni.push(["delete", "foto", id]); }
+  inBlocco(operazioni);
+}
+
+function impostaTascaAttiva(tascaId) {
+  if (tascaId) {
+    dati.tascaAttiva = { tascaId, scade: Date.now() + DURATA_TASCA_ATTIVA };
+    salvaDoc("stato", { id: "tascaAttiva", ...dati.tascaAttiva });
+  } else {
+    dati.tascaAttiva = null;
+    eliminaDoc("stato", "tascaAttiva");
+  }
 }
 
 /* =========================================================
    2. FOTO
-   - Salvate in IndexedDB (un database del browser adatto ai file).
+   - Salvate nel database come testo (data URL), una per documento.
    - Prima di salvarle: rimpicciolite, sfondo rimosso, ritagliate.
    ========================================================= */
 
-let dbPromessa;
-function apriDb() {
-  dbPromessa = dbPromessa || new Promise((ok, ko) => {
-    const r = indexedDB.open("zaino-foto", 1);
-    r.onupgradeneeded = () => r.result.createObjectStore("foto");
-    r.onsuccess = () => ok(r.result);
-    r.onerror = () => ko(r.error);
-  });
-  return dbPromessa;
-}
-
-// Esegue un'operazione sul database e aspetta che sia completata
-async function operazioneDb(modo, fn) {
-  const db = await apriDb();
-  return new Promise((ok, ko) => {
-    const t = db.transaction("foto", modo);
-    const risultato = fn(t.objectStore("foto"));
-    t.oncomplete = () => ok(risultato && risultato.result);
-    t.onerror = () => ko(t.error);
-  });
-}
-
-async function leggiTutteLeFoto() {
-  const tutte = {};
-  await operazioneDb("readonly", store => {
-    const cursore = store.openCursor();
-    cursore.onsuccess = () => {
-      const c = cursore.result;
-      if (c) { tutte[c.key] = c.value; c.continue(); }
-    };
-  });
-  return tutte;
-}
-
-// Indirizzi temporanei (blob:...) per mostrare le foto nelle <img>
+// id → immagine (data URL), pronta da usare in <img src="...">
 const urlFoto = new Map();
 
-function mettiInCache(id, blob) {
-  if (urlFoto.has(id)) URL.revokeObjectURL(urlFoto.get(id));
-  if (blob) urlFoto.set(id, URL.createObjectURL(blob));
-  else urlFoto.delete(id);
+// Salva (testo) o elimina (null) la foto di uno zaino / oggetto
+function impostaFoto(id, testo) {
+  if (testo) {
+    urlFoto.set(id, testo);
+    return salvaDoc("foto", { id, dati: testo });
+  }
+  urlFoto.delete(id);
+  return eliminaDoc("foto", id);
 }
 
-// Salva (blob) o elimina (null) la foto di uno zaino / oggetto
-async function impostaFoto(id, blob) {
-  mettiInCache(id, blob);
-  try {
-    await operazioneDb("readwrite", s => (blob ? s.put(blob, id) : s.delete(id)));
-  } catch (e) {
-    mostraToast("Errore: foto non salvata");
+const blobInTesto = blob => new Promise((ok, ko) => {
+  const r = new FileReader();
+  r.onload = () => ok(r.result);
+  r.onerror = () => ko(r.error);
+  r.readAsDataURL(blob);
+});
+
+// Un documento di Firestore può pesare al massimo 1 MB:
+// se la foto è troppo grande la rimpiccioliamo ancora
+async function fotoPerDatabase(blob) {
+  let testo = await blobInTesto(blob);
+  for (const lato of [300, 220]) {
+    if (testo.length < 700_000) break;
+    testo = await blobInTesto(await ridimensiona(blob, lato, blob.type === "image/png" ? "image/png" : "image/jpeg"));
   }
+  return testo;
 }
 
 /* ---------- Elaborazione immagine ---------- */
@@ -268,26 +282,31 @@ async function rimuoviSfondo(blob, aggiornaStato) {
 // Da file scelto dall'utente → immagine pronta da salvare
 async function preparaFoto(file, aggiornaStato) {
   const base = await ridimensiona(file, 1024, "image/jpeg");
-  if (dati.impostazioni.rimuoviSfondo) {
+  if (impostazioni.rimuoviSfondo) {
     try {
       aggiornaStato("Rimozione dello sfondo…");
       const senzaSfondo = await rimuoviSfondo(base, aggiornaStato);
       aggiornaStato("Rifinitura…");
-      return { blob: await ritagliaTrasparenza(senzaSfondo, 600), sfondoRimosso: true };
+      return { blob: await ritagliaTrasparenza(senzaSfondo, 400), sfondoRimosso: true };
     } catch (e) {
       console.warn("Rimozione sfondo non riuscita:", e);
     }
   }
-  return { blob: await ridimensiona(base, 600, "image/jpeg"), sfondoRimosso: false };
+  return { blob: await ridimensiona(base, 400, "image/jpeg"), sfondoRimosso: false };
 }
+
 
 /* =========================================================
    3. TAG NFC
    Su ogni tag si scrive un indirizzo come
-     https://.../zaino/?tag=o-ID   (oggetto)
-     https://.../zaino/?tag=t-ID   (tasca)
-   iPhone lo legge da solo e apre la pagina: qui la gestiamo.
+     https://.../Zaino/?tag=o-ID   (oggetto)
+     https://.../Zaino/?tag=t-ID   (tasca)
+   iPhone lo legge da solo e apre la pagina in Safari: qui la gestiamo.
    ========================================================= */
+
+// Il tag viene letto subito, ma eseguito solo dopo login e caricamento dati
+let tagInAttesa = new URLSearchParams(location.search).get("tag");
+if (tagInAttesa) history.replaceState(null, "", location.pathname + location.hash);
 
 function indirizzoTag(tipo, id) {
   return location.origin + location.pathname + "?tag=" + tipo + "-" + id;
@@ -295,16 +314,17 @@ function indirizzoTag(tipo, id) {
 
 function tascaAttiva() {
   const ta = dati.tascaAttiva;
-  if (ta && ta.scade > Date.now() && trovaTasca(ta.id)) return trovaTasca(ta.id);
+  if (ta && ta.scade > Date.now() && trovaTasca(ta.tascaId)) return trovaTasca(ta.tascaId);
   return null;
 }
 
-function gestisciTag() {
-  const tag = new URLSearchParams(location.search).get("tag");
-  if (!tag) return;
-  // Togliamo "?tag=..." dall'indirizzo: ricaricando la pagina non si ripete l'azione
-  history.replaceState(null, "", location.pathname + location.hash);
+// Mostra l'esito; quando il database conferma, aggiunge "✓"
+function esito(testo, promessa) {
+  mostraToast(testo + (navigator.onLine ? "" : " · offline, verrà salvato appena torna la rete"));
+  if (promessa) promessa.then(() => mostraToast(testo + " ✓"), () => {});
+}
 
+function gestisciTag(tag) {
   const trattino = tag.indexOf("-");
   const tipo = tag.slice(0, trattino);
   const id = tag.slice(trattino + 1);
@@ -312,8 +332,7 @@ function gestisciTag() {
   if (tipo === "t") {
     const tasca = trovaTasca(id);
     if (!tasca) return mostraToast("Tag non riconosciuto");
-    dati.tascaAttiva = { id, scade: Date.now() + DURATA_TASCA_ATTIVA };
-    salva();
+    impostaTascaAttiva(id);
     location.hash = "#/tasca/" + id;
     return mostraToast("Tasca attiva: " + tasca.nome + ". Ora avvicina gli oggetti.");
   }
@@ -324,27 +343,21 @@ function gestisciTag() {
     const attiva = tascaAttiva();
 
     if (attiva) {
-      // C'è una tasca selezionata → l'oggetto va lì
-      dati.tascaAttiva.scade = Date.now() + DURATA_TASCA_ATTIVA; // rinnova i 2 minuti
-      salva();
+      // C'è una tasca selezionata → l'oggetto va lì (e i 2 minuti ripartono)
+      impostaTascaAttiva(attiva.id);
       location.hash = "#/tasca/" + attiva.id;
       if (oggetto.tascaId === attiva.id) return mostraToast(oggetto.nome + " è già qui");
-      sposta(oggetto, attiva.id);
-      return mostraToast(oggetto.nome + " → " + attiva.nome);
+      return esito(oggetto.nome + " → " + attiva.nome, sposta(oggetto, attiva.id));
     }
 
     // Nessuna tasca selezionata → dentro/fuori
     location.hash = "#/oggetto/" + id;
     if (oggetto.tascaId) {
       const eraIn = posizione(oggetto);
-      sposta(oggetto, null);
-      return mostraToast(oggetto.nome + " tolto da " + eraIn);
+      return esito(oggetto.nome + " tolto da " + eraIn, sposta(oggetto, null));
     }
     const ultima = oggetto.ultimaTascaId && trovaTasca(oggetto.ultimaTascaId);
-    if (ultima) {
-      sposta(oggetto, ultima.id);
-      return mostraToast(oggetto.nome + " → " + nomeTasca(ultima));
-    }
+    if (ultima) return esito(oggetto.nome + " → " + nomeTasca(ultima), sposta(oggetto, ultima.id));
     return mostraToast("Scegli dove mettere " + oggetto.nome);
   }
 
@@ -470,7 +483,7 @@ document.getElementById("sheet").addEventListener("close", () => (modulo = null)
 
 /* ---------- Modulo di creazione / modifica ---------- */
 // modulo = { tipo, id, foto, lavora, tascaId, zainoId }
-//   foto: undefined = invariata, Blob = nuova foto, null = da rimuovere
+//   foto: undefined = invariata, testo (data URL) = nuova foto, null = da rimuovere
 let modulo = null;
 const NOMI = { zaino: "zaino", tasca: "tasca", oggetto: "oggetto" };
 
@@ -494,7 +507,7 @@ function apriModulo(tipo, id = null, extra = {}) {
           <input type="file" accept="image/*" id="input-foto" hidden>
         </label>
         <p class="stato-foto" id="stato-foto">${url ? "Tocca per cambiare foto" :
-          dati.impostazioni.rimuoviSfondo ? "Lo sfondo verrà rimosso in automatico" : ""}</p>` : `<div class="spazio"></div>`}
+          impostazioni.rimuoviSfondo ? "Lo sfondo verrà rimosso in automatico" : ""}</p>` : `<div class="spazio"></div>`}
       <ul class="lista senza-mini">
         <li class="campo"><input name="nome" value="${esc(el ? el.nome : "")}" placeholder="Nome ${NOMI[tipo]}" required enterkeyhint="done"></li>
         ${tipo === "oggetto" && !id ? `
@@ -521,11 +534,11 @@ async function fotoScelta(file) {
   try {
     const { blob, sfondoRimosso } = await preparaFoto(file, aggiorna);
     if (modulo !== questo) return; // pannello chiuso nel frattempo
-    questo.foto = blob;
-    const anteprima = URL.createObjectURL(blob);
-    picker.querySelector("img, .segnaposto").outerHTML = `<img src="${anteprima}" alt="">`;
+    questo.foto = await fotoPerDatabase(blob);
+    if (modulo !== questo) return;
+    picker.querySelector("img, .segnaposto").outerHTML = `<img src="${questo.foto}" alt="">`;
     aggiorna(sfondoRimosso ? "Sfondo rimosso ✓" :
-      dati.impostazioni.rimuoviSfondo ? "Sfondo non rimosso: uso la foto originale" : "Foto pronta");
+      impostazioni.rimuoviSfondo ? "Sfondo non rimosso: uso la foto originale" : "Foto pronta");
   } catch (e) {
     aggiorna("Impossibile leggere questa foto");
   } finally {
@@ -543,8 +556,9 @@ function salvaModulo(form) {
 
   let id = m.id;
   if (id) {
-    trova(m.tipo, id).nome = nome;
-    salva();
+    const el = trova(m.tipo, id);
+    el.nome = nome;
+    salvaDoc({ zaino: "zaini", tasca: "tasche", oggetto: "oggetti" }[m.tipo], el);
   } else if (m.tipo === "zaino") {
     id = creaZaino(nome).id;
   } else if (m.tipo === "tasca") {
@@ -751,12 +765,27 @@ function vistaImpostazioni() {
   return {
     titolo: "Impostazioni",
     html: `
+      <h2>Account</h2>
+      <ul class="lista senza-mini">
+        <li class="campo"><span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(utente.email || "")}</span></li>
+        <li><button class="riga aggiungi" data-azione="esci">Esci</button></li>
+      </ul>
+      <p class="nota">I dati sono salvati su Firebase e sincronizzati tra Safari, la web app e altri dispositivi.</p>
+
+      ${datiLocali ? `
+      <h2>Dati della versione precedente</h2>
+      <ul class="lista senza-mini">
+        <li class="campo"><span style="flex:1">Su questo dispositivo</span><span class="valore">${plurale(datiLocali.zaini.length, "zaino", "zaini")}, ${plurale(datiLocali.oggetti.length, "oggetto", "oggetti")}</span></li>
+        <li><button class="riga aggiungi" data-azione="migra">Carica nel cloud</button></li>
+      </ul>
+      <p class="nota">Aggiunge i dati salvati in questo browser dalla versione precedente dell'app. Al termine la copia locale viene eliminata.</p>` : ""}
+
       <h2>Foto</h2>
       <ul class="lista senza-mini">
         <li class="campo"><label for="sw-sfondo" style="flex:1">Rimuovi sfondo automaticamente</label>
-          <input type="checkbox" class="switch" id="sw-sfondo" data-azione="sfondo" ${dati.impostazioni.rimuoviSfondo ? "checked" : ""}></li>
+          <input type="checkbox" class="switch" id="sw-sfondo" data-azione="sfondo" ${impostazioni.rimuoviSfondo ? "checked" : ""}></li>
       </ul>
-      <p class="nota">L'elaborazione avviene sul tuo iPhone: le foto non vengono inviate a nessun server. La prima volta viene scaricato il modello di intelligenza artificiale (circa 40 MB).</p>
+      <p class="nota">Lo sfondo viene rimosso sul tuo iPhone. La prima volta viene scaricato il modello di intelligenza artificiale (circa 40 MB).</p>
 
       <h2>Backup</h2>
       <ul class="lista senza-mini">
@@ -764,7 +793,7 @@ function vistaImpostazioni() {
         <li><button class="riga aggiungi" data-azione="importa">Importa backup</button></li>
       </ul>
       <input id="file-backup" type="file" accept="application/json,.json" hidden>
-      <p class="nota">I dati sono salvati solo in Safari su questo iPhone. Safari può cancellarli se non apri l'app per 7 giorni: esporta un backup ogni tanto. Il backup include le foto.</p>
+      <p class="nota">Un file con tutti i dati e le foto. L'importazione sostituisce i dati attuali.</p>
 
       <h2>Riepilogo</h2>
       <ul class="lista senza-mini">
@@ -772,6 +801,25 @@ function vistaImpostazioni() {
         <li class="campo"><span style="flex:1">Tasche</span><span class="valore">${dati.tasche.length}</span></li>
         <li class="campo"><span style="flex:1">Oggetti</span><span class="valore">${dati.oggetti.length}</span></li>
       </ul>`
+  };
+}
+
+function vistaAccesso() {
+  return {
+    html: `
+      <div class="accesso">
+        <img class="logo" src="icona.png" alt="">
+        <h1>Zaino</h1>
+        <p>Accedi con l'account creato su Firebase.</p>
+        <form data-azione="accedi">
+          <ul class="lista senza-mini">
+            <li class="campo"><input name="email" type="email" autocomplete="username" placeholder="Email" required></li>
+            <li class="campo"><input name="password" type="password" autocomplete="current-password" placeholder="Password" required></li>
+          </ul>
+          <p class="errore" id="errore-accesso"></p>
+          <button class="btn" id="btn-accedi">Accedi</button>
+        </form>
+      </div>`
   };
 }
 
@@ -789,6 +837,23 @@ function render() {
     "": vistaZaini, zaino: vistaZaino, tasca: vistaTasca,
     inventario: vistaInventario, oggetto: vistaOggetto, impostazioni: vistaImpostazioni
   };
+  // Prima del login o mentre arrivano i dati: schermate speciali
+  const speciale = utente === null ? vistaAccesso() :
+    (utente === undefined || !caricato) ? { html: `<div class="caricamento">Caricamento…</div>` } : null;
+  document.body.classList.toggle("senza-menu", !!speciale);
+  if (speciale) {
+    document.getElementById("nav-titolo").textContent = "";
+    document.getElementById("nav-dx").innerHTML = "";
+    document.getElementById("indietro").hidden = true;
+    document.getElementById("tabbar").innerHTML = "";
+    document.getElementById("tasca-attiva").hidden = true;
+    if (!document.getElementById("errore-accesso") || !speciale.html.includes("accesso")) {
+      document.getElementById("app").innerHTML = speciale.html;
+    }
+    ultimaVista = "";
+    return;
+  }
+
   const vista = (viste[sezione] || vistaZaini)(id);
 
   // Barra in alto
@@ -859,6 +924,23 @@ document.addEventListener("submit", e => {
 
   if (form.dataset.azione === "salva-modulo") salvaModulo(form);
 
+  if (form.dataset.azione === "accedi") {
+    const errore = document.getElementById("errore-accesso");
+    const pulsante = document.getElementById("btn-accedi");
+    errore.textContent = "";
+    pulsante.disabled = true;
+    cloud.accedi(form.email.value.trim(), form.password.value).catch(e => {
+      pulsante.disabled = false;
+      errore.textContent = {
+        "auth/invalid-credential": "Email o password errati.",
+        "auth/invalid-email": "Email non valida.",
+        "auth/too-many-requests": "Troppi tentativi: riprova tra qualche minuto.",
+        "auth/network-request-failed": "Nessuna connessione a internet."
+      }[e.code] || "Accesso non riuscito (" + (e.code || e.message) + ").";
+    });
+    return;
+  }
+
   if (form.dataset.azione === "conferma-metti") {
     const tasca = trovaTasca(form.dataset.id);
     const scelti = [...form.querySelectorAll("input[name=o]:checked")].map(i => trovaOggetto(i.value));
@@ -923,9 +1005,17 @@ document.addEventListener("click", async e => {
       copia(el.dataset.testo);
       return;
     case "annulla-tasca":
-      dati.tascaAttiva = null;
-      salva();
+      impostaTascaAttiva(null);
       break;
+    case "esci":
+      if (await chiediConferma("Uscendo, questo dispositivo non mostrerà più i tuoi dati finché non accedi di nuovo.", "Esci")) {
+        location.hash = "#/";
+        cloud.esci();
+      }
+      return;
+    case "migra":
+      migraDatiLocali();
+      return;
     case "esporta":
       esportaBackup();
       return;
@@ -945,8 +1035,8 @@ document.addEventListener("change", e => {
     render();
   }
   if (el.dataset.azione === "sfondo") {
-    dati.impostazioni.rimuoviSfondo = el.checked;
-    salva();
+    impostazioni.rimuoviSfondo = el.checked;
+    salvaImpostazioni();
   }
   if (el.id === "input-foto") fotoScelta(el.files[0]);
   if (el.id === "file-backup" && el.files[0]) importaBackup(el.files[0]);
@@ -964,17 +1054,13 @@ function copia(testo) {
 }
 
 /* ---------- Backup (dati + foto in un unico file) ---------- */
-const blobInTesto = blob => new Promise(ok => {
-  const r = new FileReader();
-  r.onload = () => ok(r.result);
-  r.readAsDataURL(blob);
-});
-
-async function esportaBackup() {
-  const foto = {};
-  const tutte = await leggiTutteLeFoto();
-  for (const [id, blob] of Object.entries(tutte)) foto[id] = await blobInTesto(blob);
-  const contenuto = JSON.stringify({ versione: 2, ...dati, foto });
+function esportaBackup() {
+  const pulisci = lista => lista.map(x => ({ ...x }));
+  const contenuto = JSON.stringify({
+    versione: 3,
+    zaini: pulisci(dati.zaini), tasche: pulisci(dati.tasche), oggetti: pulisci(dati.oggetti),
+    foto: Object.fromEntries(urlFoto)
+  });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([contenuto], { type: "application/json" }));
   a.download = "zaino-backup-" + new Date().toISOString().slice(0, 10) + ".json";
@@ -982,49 +1068,177 @@ async function esportaBackup() {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
+// Prepara le scritture per caricare un insieme di dati (backup o versione precedente)
+async function operazioniPerDati(origine, foto) {
+  const operazioni = [];
+  const id = x => typeof x.id === "string" && x.id;
+  origine.zaini.filter(id).forEach(z => operazioni.push(["set", "zaini", { id: z.id, nome: String(z.nome) }]));
+  origine.tasche.filter(id).forEach(t => operazioni.push(["set", "tasche", { id: t.id, nome: String(t.nome), zainoId: t.zainoId || null }]));
+  origine.oggetti.filter(id).forEach(o => operazioni.push(["set", "oggetti", {
+    id: o.id, nome: String(o.nome), tascaId: o.tascaId || null, ultimaTascaId: o.ultimaTascaId || null
+  }]));
+  for (const [idFoto, valore] of Object.entries(foto)) {
+    try {
+      const blob = valore instanceof Blob ? valore : await (await fetch(valore)).blob();
+      const piccola = await ridimensiona(blob, 400, blob.type === "image/png" ? "image/png" : "image/jpeg");
+      operazioni.push(["set", "foto", { id: idFoto, dati: await fotoPerDatabase(piccola) }]);
+    } catch (e) { console.warn("Foto saltata", idFoto, e); }
+  }
+  return operazioni;
+}
+
 function importaBackup(file) {
   const lettore = new FileReader();
   lettore.onload = async () => {
+    let nuovi;
     try {
-      const nuovi = JSON.parse(lettore.result);
+      nuovi = JSON.parse(lettore.result);
       if (!Array.isArray(nuovi.zaini) || !Array.isArray(nuovi.tasche) || !Array.isArray(nuovi.oggetti)) throw 0;
-      if (!(await chiediConferma("Tutti i dati attuali verranno sostituiti da quelli del backup.", "Sostituisci"))) return;
-      const foto = nuovi.foto || {};
-      delete nuovi.foto; delete nuovi.versione;
-      dati = Object.assign(datiVuoti(), nuovi);
-      dati.impostazioni = Object.assign(datiVuoti().impostazioni, nuovi.impostazioni);
-      salva();
-      await operazioneDb("readwrite", s => s.clear());
-      [...urlFoto.keys()].forEach(id => mettiInCache(id, null));
-      for (const [id, testo] of Object.entries(foto)) {
-        await impostaFoto(id, await (await fetch(testo)).blob());
-      }
-      mostraToast("Backup importato");
-      render();
     } catch (e) {
-      mostraToast("File di backup non valido");
+      return mostraToast("File di backup non valido");
     }
+    if (!(await chiediConferma("Tutti i dati attuali verranno sostituiti da quelli del backup.", "Sostituisci"))) return;
+    mostraToast("Importazione in corso…");
+    const operazioni = [
+      ...dati.zaini.map(x => ["delete", "zaini", x.id]),
+      ...dati.tasche.map(x => ["delete", "tasche", x.id]),
+      ...dati.oggetti.map(x => ["delete", "oggetti", x.id]),
+      ...[...urlFoto.keys()].map(id => ["delete", "foto", id]),
+      ["delete", "stato", "tascaAttiva"],
+      ...(await operazioniPerDati(nuovi, nuovi.foto || {}))
+    ];
+    try {
+      await inBlocco(operazioni);
+      mostraToast("Backup importato ✓");
+    } catch (e) { /* l'errore è già mostrato da registra() */ }
   };
   lettore.readAsText(file);
 }
 
+/* ---------- Dati della versione precedente (salvati nel browser) ---------- */
+const CHIAVE_VECCHIA = "zaino-dati-v1";
+let datiLocali = null;
+
+function leggiDatiLocali() {
+  try {
+    const d = JSON.parse(localStorage.getItem(CHIAVE_VECCHIA));
+    if (d && Array.isArray(d.zaini) && (d.zaini.length || (d.oggetti || []).length)) {
+      datiLocali = { zaini: d.zaini, tasche: d.tasche || [], oggetti: d.oggetti || [] };
+    }
+  } catch (e) {}
+}
+
+// Le foto della versione precedente stavano in IndexedDB "zaino-foto"
+async function leggiFotoLocali() {
+  if (indexedDB.databases) {
+    const elenco = await indexedDB.databases();
+    if (!elenco.some(d => d.name === "zaino-foto")) return {};
+  }
+  const db = await new Promise((ok, ko) => {
+    const r = indexedDB.open("zaino-foto", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("foto");
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => ko(r.error);
+  });
+  const foto = {};
+  await new Promise((ok, ko) => {
+    const t = db.transaction("foto", "readonly");
+    const c = t.objectStore("foto").openCursor();
+    c.onsuccess = () => { if (c.result) { foto[c.result.key] = c.result.value; c.result.continue(); } };
+    t.oncomplete = ok;
+    t.onerror = () => ko(t.error);
+  });
+  db.close();
+  return foto;
+}
+
+async function migraDatiLocali() {
+  if (!datiLocali) return;
+  mostraToast("Caricamento nel cloud…");
+  try {
+    const foto = await leggiFotoLocali().catch(() => ({}));
+    await inBlocco(await operazioniPerDati(datiLocali, foto));
+    localStorage.removeItem(CHIAVE_VECCHIA);
+    indexedDB.deleteDatabase("zaino-foto");
+    datiLocali = null;
+    mostraToast("Dati caricati nel cloud ✓");
+    render();
+  } catch (e) {
+    mostraToast("Caricamento non riuscito: riprova con la connessione attiva");
+  }
+}
+
+/* ---------- Stato della sincronizzazione ---------- */
+let timerSync;
+function aggiornaSync() {
+  const el = document.getElementById("sync");
+  clearTimeout(timerSync);
+  if (!utente) { el.hidden = true; return; }
+  if (!navigator.onLine) {
+    el.textContent = "Offline · le modifiche verranno salvate al ritorno della rete";
+    el.hidden = false;
+  } else if (scrittureInCorso > 0) {
+    // mostrato solo se il salvataggio dura più di un attimo
+    timerSync = setTimeout(() => { el.textContent = "Salvataggio…"; el.hidden = false; }, 1200);
+  } else {
+    el.hidden = true;
+  }
+}
+window.addEventListener("online", aggiornaSync);
+window.addEventListener("offline", aggiornaSync);
+
 /* =========================================================
    7. AVVIO
    ========================================================= */
-window.addEventListener("hashchange", () => { chiudiSheet(); render(); });
-// Tornando a una scheda di Safari già aperta, rileggi i dati (un tag può averli cambiati)
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && !modulo) { dati = carica(); render(); }
+
+// Ridisegna al massimo una volta per fotogramma (gli aggiornamenti arrivano a raffiche)
+let renderPrenotato = false;
+function prenotaRender() {
+  if (renderPrenotato) return;
+  renderPrenotato = true;
+  requestAnimationFrame(() => { renderPrenotato = false; render(); });
+}
+
+function quandoArrivanoDati(collezione, elementi) {
+  if (collezione === "foto") {
+    urlFoto.clear();
+    elementi.forEach(f => urlFoto.set(f.id, f.dati));
+  } else if (collezione === "stato") {
+    const ta = elementi.find(x => x.id === "tascaAttiva");
+    dati.tascaAttiva = ta ? { tascaId: ta.tascaId, scade: ta.scade } : null;
+  } else {
+    dati[collezione] = elementi;
+  }
+  if (caricato) prenotaRender();
+}
+
+function quandoDatiPronti() {
+  caricato = true;
+  if (tagInAttesa) { const tag = tagInAttesa; tagInAttesa = null; gestisciTag(tag); }
+  render();
+}
+
+cloud.osservaUtente(u => {
+  if (smettiDiAscoltare) { smettiDiAscoltare(); smettiDiAscoltare = null; }
+  utente = u || null;
+  caricato = false;
+  dati = datiVuoti();
+  urlFoto.clear();
+  if (utente) {
+    smettiDiAscoltare = cloud.ascolta(utente.uid, quandoArrivanoDati, quandoDatiPronti, e => {
+      console.error(e);
+      mostraToast("Errore del database: " + (e.code || e.message));
+    });
+  }
+  aggiornaSync();
+  render();
 });
+
+window.addEventListener("hashchange", () => { chiudiSheet(); render(); });
 setInterval(renderBanner, 1000); // aggiorna il conto alla rovescia
 
-gestisciTag();
+leggiDatiLocali();
 render();
 
-// Le foto si caricano dal database in un secondo momento
-leggiTutteLeFoto()
-  .then(tutte => { Object.entries(tutte).forEach(([id, blob]) => mettiInCache(id, blob)); render(); })
-  .catch(() => {});
-
-// Chiede a Safari di non cancellare i dati (non sempre viene concesso)
-if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+// Service worker: permette alla web app di aprirsi anche offline
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

@@ -3,13 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0a0c11">
   <meta name="apple-mobile-web-app-title" content="Zaino">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icona.png">
   <link rel="icon" href="icona.png">
@@ -19,7 +18,7 @@
 <body>
   <!-- Barra di navigazione in stile iOS: indietro · titolo piccolo · azione -->
   <header class="nav">
-    <div class="nav-sx"><a id="indietro" class="link-nav" href="#/" hidden></a></div>
+    <div class="nav-sx"><button id="btn-menu" class="btn-menu" data-azione="menu" aria-label="Menu" hidden><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M4 12h10M4 17h16"/></svg></button><a id="indietro" class="link-nav" href="#/" hidden></a></div>
     <div class="nav-titolo" id="nav-titolo"></div>
     <div class="nav-dx" id="nav-dx"></div>
   </header>

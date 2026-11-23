@@ -335,7 +335,7 @@ function gestisciTag(tag) {
     if (!tasca) return mostraToast("Tag non riconosciuto");
     impostaTascaAttiva(id);
     location.hash = "#/tasca/" + id;
-    return mostraToast("Tasca attiva: " + tasca.nome + ". Ora avvicina gli oggetti.");
+    return mostraScena({ tipo: "tasca", tasca });
   }
 
   if (tipo === "o") {
@@ -347,18 +347,18 @@ function gestisciTag(tag) {
       // C'è una tasca selezionata → l'oggetto va lì (e i 2 minuti ripartono)
       impostaTascaAttiva(attiva.id);
       location.hash = "#/tasca/" + attiva.id;
-      if (oggetto.tascaId === attiva.id) return mostraToast(oggetto.nome + " è già qui");
-      return esito(oggetto.nome + " → " + attiva.nome, sposta(oggetto, attiva.id));
+      if (oggetto.tascaId === attiva.id) return mostraScena({ tipo: "gia", oggetto, tasca: attiva });
+      return mostraScena({ tipo: "dentro", oggetto, tasca: attiva, promessa: sposta(oggetto, attiva.id) });
     }
 
     // Nessuna tasca selezionata → dentro/fuori
     location.hash = "#/oggetto/" + id;
     if (oggetto.tascaId) {
-      const eraIn = posizione(oggetto);
-      return esito(oggetto.nome + " tolto da " + eraIn, sposta(oggetto, null));
+      const eraIn = trovaTasca(oggetto.tascaId);
+      return mostraScena({ tipo: "fuori", oggetto, tasca: eraIn, promessa: sposta(oggetto, null) });
     }
     const ultima = oggetto.ultimaTascaId && trovaTasca(oggetto.ultimaTascaId);
-    if (ultima) return esito(oggetto.nome + " → " + nomeTasca(ultima), sposta(oggetto, ultima.id));
+    if (ultima) return mostraScena({ tipo: "dentro", oggetto, tasca: ultima, promessa: sposta(oggetto, ultima.id) });
     return mostraToast("Scegli dove mettere " + oggetto.nome);
   }
 
@@ -383,6 +383,8 @@ const ICONE = {
   spunta: '<path d="m5.5 12.5 4 4 9-9"/>',
   lente: '<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>',
   x: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  utente: '<circle cx="12" cy="8.5" r="4"/><path d="M4.5 20.5c1.2-3.6 4.1-5.5 7.5-5.5s6.3 1.9 7.5 5.5"/>',
+  menu: '<path d="M4 7h16M4 12h10M4 17h16"/>',
   esci: '<path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14M9.5 8 5.5 12l4 4M5.5 12H15"/>'
 };
 function ico(nome, dim = 24, spessore = 1.8) {
@@ -671,9 +673,9 @@ function fotoAnimata(id, icona, dimIcona = 56) {
 /* ---------- Card di un oggetto ---------- */
 function cardOggetto(o, i, sotto, conTogli = false) {
   const card = `
-    <a class="card-ogg card-anim tinta ${o.tascaId ? "" : "fuori"}" href="#/oggetto/${o.id}"
+    <a class="card-ogg card-anim tinta ${o.tascaId ? "" : "fuori"}" href="#/oggetto/${o.id}" draggable="false"
        style="${tinta(o.id)}--i:${i}" data-nome="${esc(o.nome.toLowerCase())}" data-stato="${o.tascaId ? "dentro" : "fuori"}">
-      <div class="card-ogg-img">${fotoAnimata(o.id, "scatola")}</div>
+      <span class="lucentezza"></span><div class="card-ogg-img bagliore">${fotoAnimata(o.id, "scatola")}</div>
       <div class="card-ogg-testo">
         <b>${esc(o.nome)}</b>
         <span class="pill ${o.tascaId ? "dentro" : ""}">${esc(sotto)}</span>
@@ -696,8 +698,8 @@ function vistaZaini() {
       `<span>${urlFoto.get(o.id) ? `<img src="${urlFoto.get(o.id)}" alt="">` : ico("scatola", 16, 1.8)}</span>`).join("");
     const extra = contenuto.length > 4 ? `<span class="piu">+${contenuto.length - 4}</span>` : "";
     return `
-      <a class="card-zaino card-anim tinta" href="#/zaino/${z.id}" style="${tinta(z.id)}--i:${i}">
-        <div class="card-zaino-img">${fotoAnimata(z.id, "zaino", 88)}</div>
+      <a class="card-zaino card-anim tinta" href="#/zaino/${z.id}" draggable="false" style="${tinta(z.id)}--i:${i}">
+        <span class="lucentezza"></span><div class="card-zaino-img bagliore">${fotoAnimata(z.id, "zaino", 88)}</div>
         <div class="card-zaino-info">
           <div><b>${esc(z.nome)}</b>
             <span>${plurale(contenuto.length, "oggetto", "oggetti")} · ${plurale(tascheDi(z.id).length, "tasca", "tasche")}</span></div>
@@ -727,38 +729,83 @@ function vistaZaino(id) {
   const visibili = scelta ? contenuto.filter(o => o.tascaId === scelta) : contenuto;
   const piena = tasche.reduce((m, t) => (!m || oggettiIn(t.id).length > oggettiIn(m.id).length ? t : m), null);
 
-  const chip = (tascaId, nome, n, i) =>
-    `<button class="chip ${scelta === tascaId || (!scelta && !tascaId) ? "attivo" : ""}" style="--i:${i}"
-       data-azione="scegli-tasca" data-zaino="${id}" data-tasca="${tascaId || ""}">${esc(nome)}<span class="num">${n}</span></button>`;
+  // Con poche tasche: mappa interattiva. Con tante: pillole scorrevoli.
+  const selettore = tasche.length <= 10 ? mappaZaino(zaino, tasche, contenuto, scelta) : `
+      <div class="hero2 tinta bagliore" style="${tinta(id)}">${fotoAnimata(id, "zaino", 110)}</div>
+      <h2>Tasche</h2>
+      <div class="chips">
+        ${chipTasca(id, null, "Tutte", contenuto.length, 0, scelta)}
+        ${tasche.map((t, i) => chipTasca(id, t.id, t.nome, oggettiIn(t.id).length, i + 1, scelta)).join("")}
+        <button class="chip aggiungi" data-azione="nuovo" data-tipo="tasca" data-zaino="${id}">${ico("piu", 18, 2.2)} Tasca</button>
+      </div>`;
 
   return {
     titolo: zaino.nome,
     indietro: { href: "#/", testo: "Zaini" },
     destra: pulsanteModifica("zaino", id),
     html: `
-      <div class="hero2 tinta" style="${tinta(id)}">${fotoAnimata(id, "zaino", 110)}</div>
+      ${selettore}
       <div class="stats">
-        <div class="stat"><b>${contenuto.length}</b><span>${contenuto.length === 1 ? "oggetto" : "oggetti"}</span></div>
-        <div class="stat"><b>${tasche.length}</b><span>${tasche.length === 1 ? "tasca" : "tasche"}</span></div>
-        <div class="stat"><b class="piccolo">${piena && oggettiIn(piena.id).length ? esc(piena.nome) : "—"}</b><span>la più piena</span></div>
-      </div>
-
-      <h2>Tasche</h2>
-      <div class="chips">
-        ${chip(null, "Tutte", contenuto.length, 0)}
-        ${tasche.map((t, i) => chip(t.id, t.nome, oggettiIn(t.id).length, i + 1)).join("")}
-        <button class="chip aggiungi" data-azione="nuovo" data-tipo="tasca" data-zaino="${id}">${ico("piu", 18, 2.2)} Tasca</button>
+        <div class="stat" style="--i:1"><b>${contenuto.length}</b><span>${contenuto.length === 1 ? "oggetto" : "oggetti"}</span></div>
+        <div class="stat" style="--i:2"><b>${tasche.length}</b><span>${tasche.length === 1 ? "tasca" : "tasche"}</span></div>
+        <div class="stat" style="--i:3"><b class="piccolo">${piena && oggettiIn(piena.id).length ? esc(piena.nome) : "—"}</b><span>la più piena</span></div>
       </div>
       ${scelta ? `
       <a class="barra-tasca" href="#/tasca/${scelta}">
         ${ico("tasca", 22, 1.8)}<span><span>Apri <b>${esc(trovaTasca(scelta).nome)}</b></span><small>Metti oggetti, tag NFC, modifica</small></span>
         ${ico("avanti", 18, 2.2)}</a>` : ""}
-
+      <h2>${scelta ? esc(trovaTasca(scelta).nome) : "Tutto il contenuto"}</h2>
       ${visibili.length
-        ? `<div class="griglia-ogg">${visibili.map((o, i) => cardOggetto(o, i, nomeTascaBreve(o))).join("")}</div>`
+        ? `<div class="griglia-ogg">${visibili.map((o, i) => cardOggetto(o, i, nomeTascaBreve(o))).join("")}</div>
+           <p class="nota centro">Tieni premuto un oggetto per spostarlo · scorrilo di lato per toglierlo</p>`
         : `<div class="vuoto piccolo">${ico("scatola", 48, 1.2)}<span>${scelta ? "Questa tasca è vuota." : "Lo zaino è vuoto."}</span>
             ${scelta ? `<button class="btn" data-azione="metti-qui" data-id="${scelta}">Metti oggetti</button>` : ""}</div>`}`
   };
+}
+
+function chipTasca(zainoId, tascaId, nome, n, i, scelta) {
+  return `<button class="chip ${scelta === tascaId || (!scelta && !tascaId) ? "attivo" : ""}" style="--i:${i}"
+     data-azione="scegli-tasca" data-zaino="${zainoId}" data-tasca="${tascaId || ""}" ${tascaId ? `data-drop="${tascaId}"` : ""}>${esc(nome)}<span class="num">${n}</span></button>`;
+}
+
+/* ---------- Mappa dello zaino ----------
+   Lo zaino al centro, le tasche come bolle disposte su un'ellisse,
+   collegate da linee. Tocca una bolla per vedere il suo contenuto,
+   tocca lo zaino per vedere tutto. Le bolle accettano oggetti trascinati. */
+function mappaZaino(zaino, tasche, contenuto, scelta) {
+  const n = tasche.length;
+  const pos = tasche.map((t, i) => {
+    const angolo = (-90 + (i * 360) / Math.max(n, 1)) * Math.PI / 180;
+    return { x: 50 + 38 * Math.cos(angolo), y: 50 + 36 * Math.sin(angolo) };
+  });
+  const linee = tasche.map((t, i) =>
+    `<line x1="50" y1="50" x2="${pos[i].x.toFixed(1)}" y2="${pos[i].y.toFixed(1)}" class="${scelta === t.id ? "attiva" : ""}" style="--i:${i}"/>`).join("");
+
+  const bolle = tasche.map((t, i) => {
+    const dentro = oggettiIn(t.id);
+    const anteprime = dentro.slice(0, 3).map((o, k) =>
+      `<span class="bolla-mini m${k}">${urlFoto.get(o.id) ? `<img src="${urlFoto.get(o.id)}" alt="">` : ico("scatola", 14, 1.8)}</span>`).join("");
+    return `
+      <button class="bolla ${dentro.length ? "" : "vuota"} ${scelta === t.id ? "attiva" : ""}"
+        style="left:${pos[i].x.toFixed(1)}%;top:${pos[i].y.toFixed(1)}%;--i:${i};--prof:${(0.6 + (i % 3) * 0.3).toFixed(1)}"
+        data-azione="scegli-tasca" data-zaino="${zaino.id}" data-tasca="${t.id}" data-drop="${t.id}">
+        <span class="bolla-cerchio">${dentro.length ? `<span class="bolla-anteprime n${Math.min(dentro.length, 3)}">${anteprime}</span>` : ico("tasca", 22, 1.6)}
+          <span class="bolla-num">${dentro.length}</span></span>
+        <span class="bolla-nome">${esc(t.nome)}</span>
+      </button>`;
+  }).join("");
+
+  return `
+    <div class="mappa tinta ${n ? "" : "senza-tasche"}" style="${tinta(zaino.id)}">
+      <svg class="mappa-linee" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${linee}</svg>
+      <button class="mappa-centro ${scelta ? "" : "attivo"}" data-azione="scegli-tasca" data-zaino="${zaino.id}" data-tasca="" aria-label="Tutto il contenuto">
+        ${fotoAnimata(zaino.id, "zaino", 72)}
+        <span class="mappa-tot">${contenuto.length}</span>
+      </button>
+      ${bolle}
+      <button class="mappa-piu" data-azione="nuovo" data-tipo="tasca" data-zaino="${zaino.id}" aria-label="Nuova tasca">${ico("piu", 20, 2.2)}</button>
+      ${n ? "" : `<p class="mappa-aiuto">Aggiungi le tasche con +</p>`}
+    </div>`;
 }
 
 function vistaTasca(id) {
@@ -827,7 +874,7 @@ function vistaOggetto(id) {
     indietro: { href: "#/inventario", testo: "Inventario" },
     destra: pulsanteModifica("oggetto", id),
     html: `
-      <div class="hero2 tinta ${tasca ? "" : "fuori"}" style="${tinta(id)}">${fotoAnimata(id, "scatola", 110)}</div>
+      <div class="hero2 tinta bagliore ${tasca ? "" : "fuori"}" style="${tinta(id)}">${fotoAnimata(id, "scatola", 110)}</div>
 
       <a class="posizione ${tasca ? "dentro" : ""}" ${tasca ? `href="#/tasca/${tasca.id}"` : ""}>
         <span class="posizione-ico">${ico(tasca ? "tasca" : "esci", 26, 1.8)}</span>
@@ -851,27 +898,21 @@ function vistaImpostazioni() {
   return {
     titolo: "Impostazioni",
     html: `
-      <h2>Account</h2>
+      <h2>Effetti</h2>
       <ul class="lista senza-mini">
-        <li class="campo"><span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(utente.email || "")}</span></li>
-        <li><button class="riga aggiungi" data-azione="esci">Esci</button></li>
+        <li class="campo"><label for="sw-giro" style="flex:1">Movimento con il giroscopio</label>
+          <input type="checkbox" class="switch" id="sw-giro" data-azione="giroscopio" ${impostazioni.giroscopio ? "checked" : ""}></li>
+        <li class="campo"><label for="sw-sfondo" style="flex:1">Rimuovi sfondo dalle foto</label>
+          <input type="checkbox" class="switch" id="sw-sfondo" data-azione="sfondo" ${impostazioni.rimuoviSfondo ? "checked" : ""}></li>
       </ul>
-      <p class="nota">I dati sono salvati su Firebase e sincronizzati tra Safari, la web app e altri dispositivi.</p>
+      <p class="nota">Il giroscopio fa muovere oggetti e luci quando inclini l'iPhone: iOS chiede il permesso la prima volta. La rimozione dello sfondo avviene sul telefono (la prima volta scarica circa 40 MB).</p>
 
       ${datiLocali ? `
       <h2>Dati della versione precedente</h2>
       <ul class="lista senza-mini">
         <li class="campo"><span style="flex:1">Su questo dispositivo</span><span class="valore">${plurale(datiLocali.zaini.length, "zaino", "zaini")}, ${plurale(datiLocali.oggetti.length, "oggetto", "oggetti")}</span></li>
         <li><button class="riga aggiungi" data-azione="migra">Carica nel cloud</button></li>
-      </ul>
-      <p class="nota">Aggiunge i dati salvati in questo browser dalla versione precedente dell'app. Al termine la copia locale viene eliminata.</p>` : ""}
-
-      <h2>Foto</h2>
-      <ul class="lista senza-mini">
-        <li class="campo"><label for="sw-sfondo" style="flex:1">Rimuovi sfondo automaticamente</label>
-          <input type="checkbox" class="switch" id="sw-sfondo" data-azione="sfondo" ${impostazioni.rimuoviSfondo ? "checked" : ""}></li>
-      </ul>
-      <p class="nota">Lo sfondo viene rimosso sul tuo iPhone. La prima volta viene scaricato il modello di intelligenza artificiale (circa 40 MB).</p>
+      </ul>` : ""}
 
       <h2>Backup</h2>
       <ul class="lista senza-mini">
@@ -879,13 +920,12 @@ function vistaImpostazioni() {
         <li><button class="riga aggiungi" data-azione="importa">Importa backup</button></li>
       </ul>
       <input id="file-backup" type="file" accept="application/json,.json" hidden>
-      <p class="nota">Un file con tutti i dati e le foto. L'importazione sostituisce i dati attuali.</p>
+      <p class="nota">Un file con tutti i dati e le foto. L'importazione sostituisce i dati attuali. I dati sono già salvati su Firebase e sincronizzati tra i tuoi dispositivi.</p>
 
-      <h2>Riepilogo</h2>
+      <h2>Account</h2>
       <ul class="lista senza-mini">
-        <li class="campo"><span style="flex:1">Zaini</span><span class="valore">${dati.zaini.length}</span></li>
-        <li class="campo"><span style="flex:1">Tasche</span><span class="valore">${dati.tasche.length}</span></li>
-        <li class="campo"><span style="flex:1">Oggetti</span><span class="valore">${dati.oggetti.length}</span></li>
+        <li class="campo"><span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(utente.email || "")}</span></li>
+        <li><button class="riga rosso" data-azione="esci">Esci</button></li>
       </ul>`
   };
 }
@@ -922,7 +962,8 @@ function render() {
   const [, sezione = "", id] = (location.hash || "#/").split("/");
   const viste = {
     "": vistaZaini, zaino: vistaZaino, tasca: vistaTasca,
-    inventario: vistaInventario, oggetto: vistaOggetto, impostazioni: vistaImpostazioni
+    inventario: vistaInventario, oggetto: vistaOggetto, impostazioni: vistaImpostazioni,
+    profilo: vistaProfilo
   };
   // Prima del login o mentre arrivano i dati: schermate speciali
   const speciale = utente === null ? vistaAccesso() :
@@ -932,6 +973,7 @@ function render() {
     document.getElementById("nav-titolo").textContent = "";
     document.getElementById("nav-dx").innerHTML = "";
     document.getElementById("indietro").hidden = true;
+    document.getElementById("btn-menu").hidden = true;
     document.getElementById("tabbar").innerHTML = "";
     document.getElementById("tasca-attiva").hidden = true;
     if (!document.getElementById("errore-accesso") || !speciale.html.includes("accesso")) {
@@ -948,6 +990,7 @@ function render() {
   document.getElementById("nav-dx").innerHTML = vista.destra || "";
   const indietro = document.getElementById("indietro");
   indietro.hidden = !vista.indietro;
+  document.getElementById("btn-menu").hidden = !!vista.indietro;
   if (vista.indietro) {
     indietro.href = vista.indietro.href;
     indietro.innerHTML = ico("indietro", 26, 2.2) + `<span>${esc(vista.indietro.testo)}</span>`;
@@ -968,16 +1011,19 @@ function render() {
   applicaFiltri();
   aggiornaScroll();
 
-  // Barra delle schede
-  const scheda = { "": "zaini", zaino: "zaini", tasca: "zaini",
-    inventario: "inventario", oggetto: "inventario", impostazioni: "impostazioni" }[sezione] || "zaini";
-  const tab = (nome, href, icona, testo) =>
-    `<a href="${href}" class="${scheda === nome ? "attivo" : ""}">${ico(icona, 26, scheda === nome ? 2 : 1.6)}${testo}</a>`;
-  document.getElementById("tabbar").innerHTML =
-    tab("zaini", "#/", "zaino", "Zaini") +
-    tab("inventario", "#/inventario", "scatola", "Inventario") +
-    tab("impostazioni", "#/impostazioni", "regola", "Impostazioni");
+  // Barra delle schede: capsula con indicatore che scivola
+  const scheda = { "": "zaini", zaino: "zaini", tasca: "zaini", inventario: "inventario", oggetto: "inventario" }[sezione];
+  const tabbar = document.getElementById("tabbar");
+  if (!tabbar.querySelector(".tab-indicatore")) {
+    tabbar.innerHTML = `<span class="tab-indicatore"></span>` +
+      [["zaini", "#/", "zaino", "Zaini"], ["inventario", "#/inventario", "scatola", "Oggetti"]]
+        .map(([nome, href, icona, testo]) => `<a href="${href}" data-scheda="${nome}">${ico(icona, 22, 2)}<span>${testo}</span></a>`).join("");
+  }
+  tabbar.style.setProperty("--pos", scheda === "inventario" ? 1 : 0);
+  tabbar.classList.toggle("nessuna", !scheda);
+  tabbar.querySelectorAll("a").forEach(a => a.classList.toggle("attivo", a.dataset.scheda === scheda));
 
+  impostaTintaSfondo(sezione, id);
   renderBanner();
 }
 
@@ -1013,6 +1059,7 @@ document.addEventListener("submit", e => {
   e.preventDefault();
 
   if (form.dataset.azione === "salva-modulo") salvaModulo(form);
+  if (form.dataset.azione === "salva-profilo") salvaProfilo(form);
 
   if (form.dataset.azione === "accedi") {
     const errore = document.getElementById("errore-accesso");
@@ -1102,7 +1149,14 @@ document.addEventListener("click", async e => {
     case "annulla-tasca":
       impostaTascaAttiva(null);
       break;
+    case "menu":
+      apriMenu();
+      return;
+    case "modifica-profilo":
+      apriModificaProfilo();
+      return;
     case "esci":
+      chiudiMenu();
       if (await chiediConferma("Uscendo, questo dispositivo non mostrerà più i tuoi dati finché non accedi di nuovo.", "Esci")) {
         location.hash = "#/";
         cloud.esci();
@@ -1128,6 +1182,19 @@ document.addEventListener("change", e => {
     sposta(o, el.value || null);
     mostraToast(o.nome + " → " + posizione(o));
     render();
+  }
+  if (el.dataset.azione === "giroscopio") {
+    if (el.checked) {
+      avviaGiroscopio().then(ok => {
+        impostazioni.giroscopio = ok;
+        salvaImpostazioni();
+        if (!ok) { el.checked = false; mostraToast("Permesso per il movimento non concesso"); }
+      });
+    } else {
+      impostazioni.giroscopio = false;
+      salvaImpostazioni();
+      fermaGiroscopio();
+    }
   }
   if (el.dataset.azione === "sfondo") {
     impostazioni.rimuoviSfondo = el.checked;
@@ -1302,6 +1369,8 @@ function quandoArrivanoDati(collezione, elementi) {
   } else if (collezione === "stato") {
     const ta = elementi.find(x => x.id === "tascaAttiva");
     dati.tascaAttiva = ta ? { tascaId: ta.tascaId, scade: ta.scade } : null;
+    const pr = elementi.find(x => x.id === "profilo");
+    dati.profilo = pr ? { nome: pr.nome, emoji: pr.emoji, colore: pr.colore } : null;
   } else {
     dati[collezione] = elementi;
   }
@@ -1334,6 +1403,7 @@ cloud.osservaUtente(u => {
 const movimentoRidotto = matchMedia("(prefers-reduced-motion: reduce)");
 window.addEventListener("hashchange", () => {
   chiudiSheet();
+  chiudiMenu();
   if (document.startViewTransition && !movimentoRidotto.matches && caricato) {
     document.startViewTransition(() => render());
   } else render();
@@ -1368,3 +1438,509 @@ render();
 
 // Service worker: permette alla web app di aprirsi anche offline
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+
+/* =========================================================
+   8. EFFETTI
+   - Scena animata quando si legge un tag NFC
+   - Gesti: tieni premuto e trascina · scorri di lato per togliere
+   - Giroscopio: parallasse inclinando l'iPhone
+   ========================================================= */
+
+/* ---------- Scena NFC ----------
+   tipo: "dentro" (l'oggetto cade nello zaino), "fuori" (esce),
+         "tasca" (tasca attivata), "gia" (era già lì) */
+let timerScena;
+
+function mostraScena({ tipo, oggetto, tasca, promessa }) {
+  if (movimentoRidotto.matches) {
+    const testi = {
+      dentro: oggetto && tasca ? oggetto.nome + " → " + tasca.nome : "",
+      fuori: oggetto ? oggetto.nome + " tolto" : "",
+      tasca: tasca ? "Tasca attiva: " + tasca.nome : "",
+      gia: oggetto ? oggetto.nome + " è già qui" : ""
+    };
+    return esito(testi[tipo], promessa);
+  }
+  chiudiScena(true);
+  const zainoId = tasca ? tasca.zainoId : null;
+  const etichette = {
+    dentro: ["Messo in", tasca && tasca.nome],
+    fuori: ["Tolto da", tasca && tasca.nome],
+    tasca: ["Tasca attiva", "Ora avvicina gli oggetti"],
+    gia: ["È già in", tasca && tasca.nome]
+  }[tipo];
+  const nome = tipo === "tasca" ? tasca.nome : oggetto.nome;
+  const urlZaino = zainoId && urlFoto.get(zainoId);
+  const urlOggetto = oggetto && urlFoto.get(oggetto.id);
+
+  const el = document.createElement("div");
+  el.id = "scena";
+  el.className = "scena tipo-" + tipo;
+  el.style.cssText = tinta(oggetto ? oggetto.id : zainoId) || "";
+  el.innerHTML = `
+    <div class="scena-sfondo tinta" style="${tinta(zainoId)}"></div>
+    <div class="scena-palco">
+      <div class="scena-onda"></div><div class="scena-onda o2"></div>
+      <div class="scena-zaino">${urlZaino ? `<img src="${urlZaino}" alt="">` : ico("zaino", 120, 1.1)}</div>
+      ${oggetto ? `<div class="scena-oggetto">${urlOggetto ? `<img src="${urlOggetto}" alt="">` : `<span class="scena-ico">${ico("scatola", 64, 1.4)}</span>`}</div>` : ""}
+    </div>
+    <div class="scena-testo">
+      <small>${esc(tipo === "tasca" ? etichette[0] : etichette[0] + " " + (etichette[1] || ""))}</small>
+      <b>${esc(nome)}</b>
+      ${tipo === "tasca" ? `<span class="scena-meta">${ico("nfc", 18, 2)} ${esc(etichette[1])}</span>` : ""}
+      ${promessa ? `<span class="scena-stato">${navigator.onLine ? "Salvataggio…" : "Offline · verrà salvato"}</span>` : ""}
+    </div>
+    <p class="scena-chiudi">Tocca per chiudere</p>`;
+  el.addEventListener("click", () => chiudiScena());
+  document.body.appendChild(el);
+
+  if (promessa) promessa.then(() => {
+    const s = el.querySelector(".scena-stato");
+    if (s) { s.textContent = "✓ Salvato"; s.classList.add("ok"); }
+  }, () => {});
+  clearTimeout(timerScena);
+  timerScena = setTimeout(chiudiScena, tipo === "tasca" ? 2600 : 3000);
+}
+
+function chiudiScena(subito) {
+  const el = document.getElementById("scena");
+  if (!el) return;
+  clearTimeout(timerScena);
+  if (subito) return el.remove();
+  el.classList.add("esce");
+  setTimeout(() => el.remove(), 350);
+}
+
+/* ---------- Gesti sulle card degli oggetti ----------
+   - Scorri di lato: toglie l'oggetto (o lo rimette nell'ultima tasca)
+   - Tieni premuto e trascina: lo sposti su una tasca o su "Fuori" */
+const PRESSIONE_LUNGA = 380; // millisecondi
+let gesto = null;
+let sopprimiClick = false;
+
+document.addEventListener("pointerdown", e => {
+  if (gesto || e.button > 0) return;
+  const card = e.target.closest(".card-ogg");
+  if (!card || e.target.closest(".btn-togli")) return;
+  const id = card.getAttribute("href").split("/").pop();
+  gesto = { card, id, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, modo: null, pointerId: e.pointerId };
+  gesto.timer = setTimeout(() => {
+    if (gesto && !gesto.modo) iniziaTrascinamento();
+  }, PRESSIONE_LUNGA);
+});
+
+document.addEventListener("pointermove", e => {
+  if (!gesto || e.pointerId !== gesto.pointerId) return;
+  gesto.x = e.clientX; gesto.y = e.clientY;
+  const dx = e.clientX - gesto.x0, dy = e.clientY - gesto.y0;
+
+  if (!gesto.modo) {
+    if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.3) iniziaScorrimento();
+    else if (Math.abs(dy) > 10) return annullaGesto(); // è uno scroll della pagina
+    else return;
+  }
+  if (gesto.modo === "scorri") muoviScorrimento(dx);
+  if (gesto.modo === "trascina") muoviTrascinamento(e.clientX, e.clientY);
+});
+
+// Durante un gesto blocchiamo lo scroll della pagina (serve su iPhone)
+document.addEventListener("touchmove", e => {
+  if (gesto && gesto.modo) e.preventDefault();
+}, { passive: false });
+
+document.addEventListener("pointerup", e => {
+  if (!gesto || e.pointerId !== gesto.pointerId) return;
+  if (gesto.modo === "scorri") fineScorrimento();
+  else if (gesto.modo === "trascina") fineTrascinamento();
+  else annullaGesto();
+});
+document.addEventListener("pointercancel", () => {
+  if (!gesto) return;
+  if (gesto.modo === "scorri") { gesto.dx = 0; fineScorrimento(); }
+  else if (gesto.modo === "trascina") { gesto.bersaglio = null; fineTrascinamento(); }
+  else annullaGesto();
+});
+
+// Niente trascinamento "nativo" dei link: interromperebbe i nostri gesti
+document.addEventListener("dragstart", e => {
+  if (e.target.closest && e.target.closest(".card-anim")) e.preventDefault();
+});
+
+// Dopo un gesto il "click" sulla card non deve aprire l'oggetto
+document.addEventListener("click", e => {
+  if (sopprimiClick) { e.preventDefault(); e.stopPropagation(); sopprimiClick = false; }
+}, true);
+
+function annullaGesto() {
+  if (gesto) clearTimeout(gesto.timer);
+  gesto = null;
+}
+
+/* --- Scorrimento laterale --- */
+function iniziaScorrimento() {
+  clearTimeout(gesto.timer);
+  rilasciaCard();
+  const o = trovaOggetto(gesto.id);
+  const ultima = o && o.ultimaTascaId && trovaTasca(o.ultimaTascaId);
+  gesto.modo = "scorri";
+  gesto.azione = !o ? null : o.tascaId ? "togli" : ultima ? "rimetti" : null;
+  gesto.card.classList.add("scorre");
+  const etichetta = document.createElement("span");
+  etichetta.className = "swipe-etichetta " + (gesto.azione || "nessuna");
+  etichetta.innerHTML = gesto.azione === "togli" ? `${ico("esci", 18, 2.2)} Togli`
+    : gesto.azione === "rimetti" ? `${ico("tasca", 18, 2.2)} In ${esc(ultima.nome)}` : "Tieni premuto per spostare";
+  gesto.card.appendChild(etichetta);
+}
+
+function muoviScorrimento(dx) {
+  const larghezza = gesto.card.offsetWidth;
+  const efficace = gesto.azione ? dx : dx * 0.25; // senza azione possibile: resistenza
+  gesto.dx = efficace;
+  const avanzamento = Math.min(1, Math.abs(efficace) / (larghezza * 0.4));
+  gesto.card.style.transform = `translateX(${efficace}px) rotate(${efficace / 18}deg)`;
+  gesto.card.style.setProperty("--swipe", avanzamento.toFixed(2));
+  gesto.card.classList.toggle("pronto", avanzamento >= 1 && !!gesto.azione);
+}
+
+function fineScorrimento() {
+  const { card, id, azione } = gesto;
+  const dx = gesto.dx || 0;
+  const conferma = azione && Math.abs(dx) >= card.offsetWidth * 0.4;
+  sopprimiClick = true;
+  setTimeout(() => (sopprimiClick = false), 400);
+  gesto = null;
+  card.classList.remove("scorre", "pronto");
+  card.style.transition = "transform .35s cubic-bezier(.2,.8,.2,1), opacity .35s";
+  if (!conferma) {
+    card.style.transform = "";
+    card.style.removeProperty("--swipe");
+    setTimeout(() => { card.style.transition = ""; card.querySelector(".swipe-etichetta")?.remove(); }, 360);
+    return;
+  }
+  card.style.transform = `translateX(${Math.sign(dx) * 130}%) rotate(${Math.sign(dx) * 12}deg)`;
+  card.style.opacity = "0";
+  setTimeout(() => {
+    const o = trovaOggetto(id);
+    if (!o) return render();
+    if (azione === "togli") {
+      const eraIn = trovaTasca(o.tascaId);
+      esito(o.nome + " tolto" + (eraIn ? " da " + eraIn.nome : ""), sposta(o, null));
+    } else {
+      const ultima = trovaTasca(o.ultimaTascaId);
+      esito(o.nome + " → " + ultima.nome, sposta(o, ultima.id));
+    }
+    animaProssimo = false;
+    render();
+  }, 300);
+}
+
+/* --- Trascinamento --- */
+function iniziaTrascinamento() {
+  const o = trovaOggetto(gesto.id);
+  if (!o) return annullaGesto();
+  rilasciaCard();
+  gesto.modo = "trascina";
+  gesto.card.classList.add("trascinato");
+
+  // Copia volante dell'oggetto che segue il dito
+  const url = urlFoto.get(o.id);
+  const fantasma = document.createElement("div");
+  fantasma.className = "fantasma tinta";
+  fantasma.style.cssText = tinta(o.id);
+  fantasma.innerHTML = url ? `<img src="${url}" alt="">` : ico("scatola", 48, 1.4);
+  document.body.appendChild(fantasma);
+  gesto.fantasma = fantasma;
+
+  // Pannello con tutte le tasche (e "Fuori") su cui rilasciare
+  const piuZaini = dati.zaini.length > 1;
+  const tasche = [...dati.tasche].sort((a, b) =>
+    (trovaZaino(a.zainoId)?.nome || "").localeCompare(trovaZaino(b.zainoId)?.nome || "", "it") || perNome(a, b));
+  const dock = document.createElement("div");
+  dock.className = "dock";
+  dock.innerHTML = `
+    <p>Rilascia <b>${esc(o.nome)}</b> su una tasca</p>
+    <div class="dock-tasche">
+      ${tasche.map((t, i) => `<span class="dock-tasca ${t.id === o.tascaId ? "attuale" : ""}" data-drop="${t.id}" style="--i:${i}">
+        ${piuZaini ? `<small>${esc(trovaZaino(t.zainoId)?.nome || "")}</small>` : ""}${esc(t.nome)}</span>`).join("")}
+      <span class="dock-tasca fuori ${o.tascaId ? "" : "attuale"}" data-drop="fuori" style="--i:${tasche.length}">${ico("esci", 16, 2.2)} Fuori</span>
+    </div>`;
+  document.body.appendChild(dock);
+  gesto.dock = dock;
+  document.body.classList.add("trascinando");
+  muoviTrascinamento(gesto.x, gesto.y);
+}
+
+function muoviTrascinamento(x, y) {
+  const f = gesto.fantasma;
+  const vx = x - (gesto.ux ?? x);
+  gesto.ux = x;
+  f.style.transform = `translate(${x - 55}px, ${y - 70}px) rotate(${Math.max(-12, Math.min(12, vx * 0.8))}deg)`;
+  const sotto = document.elementFromPoint(x, y);
+  const bersaglio = sotto && sotto.closest("[data-drop]");
+  if (bersaglio !== gesto.bersaglio) {
+    gesto.bersaglio?.classList.remove("bersaglio");
+    bersaglio?.classList.add("bersaglio");
+    gesto.bersaglio = bersaglio;
+  }
+}
+
+function fineTrascinamento() {
+  const { card, id, fantasma, dock, bersaglio } = gesto;
+  gesto = null;
+  sopprimiClick = true;
+  setTimeout(() => (sopprimiClick = false), 400);
+  document.body.classList.remove("trascinando");
+  const o = trovaOggetto(id);
+  const destinazione = bersaglio ? (bersaglio.dataset.drop === "fuori" ? null : bersaglio.dataset.drop) : undefined;
+
+  const pulisci = () => { fantasma.remove(); dock.remove(); card.classList.remove("trascinato"); };
+  if (!o || destinazione === undefined || destinazione === o.tascaId) {
+    // Nessun bersaglio: la copia torna al suo posto
+    const r = card.getBoundingClientRect();
+    fantasma.classList.add("torna");
+    fantasma.style.transform = `translate(${r.left + r.width / 2 - 55}px, ${r.top + r.width / 2 - 70}px) scale(.8)`;
+    dock.classList.add("esce");
+    setTimeout(pulisci, 320);
+    return;
+  }
+  // Rilasciato su una tasca: la copia "entra" nel bersaglio
+  const r = bersaglio.getBoundingClientRect();
+  bersaglio.classList.add("ricevuto");
+  fantasma.classList.add("entra");
+  fantasma.style.transform = `translate(${r.left + r.width / 2 - 55}px, ${r.top + r.height / 2 - 70}px) scale(.15)`;
+  dock.classList.add("esce");
+  setTimeout(() => {
+    pulisci();
+    const tasca = destinazione && trovaTasca(destinazione);
+    esito(tasca ? o.nome + " → " + tasca.nome : o.nome + " tolto", sposta(o, destinazione));
+    render();
+  }, 380);
+}
+
+/* ---------- Giroscopio ----------
+   Inclinando l'iPhone foto, bolle e sfondo si spostano a strati
+   (parallasse). iOS chiede il permesso la prima volta. */
+const giro = { attivo: false, base: null, tx: 0, ty: 0, gx: 0, gy: 0 };
+
+function avviaGiroscopio() {
+  const D = window.DeviceOrientationEvent;
+  if (!D || movimentoRidotto.matches) return Promise.resolve(false);
+  const permesso = typeof D.requestPermission === "function" ? D.requestPermission() : Promise.resolve("granted");
+  return permesso.then(r => {
+    if (r !== "granted") return false;
+    if (!giro.attivo) {
+      giro.attivo = true;
+      giro.base = null;
+      window.addEventListener("deviceorientation", suOrientamento);
+      document.documentElement.classList.add("giro");
+      requestAnimationFrame(cicloGiro);
+    }
+    return true;
+  }).catch(() => false);
+}
+
+function fermaGiroscopio() {
+  giro.attivo = false;
+  window.removeEventListener("deviceorientation", suOrientamento);
+  document.documentElement.classList.remove("giro");
+  document.documentElement.style.setProperty("--gx", 0);
+  document.documentElement.style.setProperty("--gy", 0);
+}
+
+function suOrientamento(e) {
+  if (e.beta == null || e.gamma == null) return;
+  if (!giro.base) giro.base = { b: e.beta, g: e.gamma };
+  // La posizione "neutra" segue lentamente come tieni il telefono
+  giro.base.b += (e.beta - giro.base.b) * 0.015;
+  giro.base.g += (e.gamma - giro.base.g) * 0.015;
+  giro.tx = Math.max(-1, Math.min(1, (e.gamma - giro.base.g) / 18));
+  giro.ty = Math.max(-1, Math.min(1, (e.beta - giro.base.b) / 18));
+}
+
+function cicloGiro() {
+  if (!giro.attivo) return;
+  const nx = giro.gx + (giro.tx - giro.gx) * 0.12;
+  const ny = giro.gy + (giro.ty - giro.gy) * 0.12;
+  if (Math.abs(nx - giro.gx) > 0.002 || Math.abs(ny - giro.gy) > 0.002) {
+    giro.gx = nx; giro.gy = ny;
+    document.documentElement.style.setProperty("--gx", nx.toFixed(3));
+    document.documentElement.style.setProperty("--gy", ny.toFixed(3));
+  }
+  requestAnimationFrame(cicloGiro);
+}
+
+// Se l'effetto era già attivo, iOS richiede comunque un tocco per riattivarlo
+if (impostazioni.giroscopio) {
+  const riattiva = () => {
+    avviaGiroscopio();
+    document.removeEventListener("touchend", riattiva);
+    document.removeEventListener("click", riattiva);
+  };
+  document.addEventListener("touchend", riattiva);
+  document.addEventListener("click", riattiva);
+}
+
+/* ---------- Sfondo animato ----------
+   Il colore dello sfondo segue lo zaino (o l'oggetto) in primo piano. */
+function impostaTintaSfondo(sezione, id) {
+  let rif = null;
+  if (sezione === "zaino" || sezione === "oggetto") rif = id;
+  else if (sezione === "tasca") rif = trovaTasca(id)?.zainoId;
+  else rif = dati.zaini[0]?.id;
+  const c = rif && coloreFoto.get(rif);
+  const r = document.documentElement.style;
+  r.setProperty("--bh", c ? c.h : 215);
+  r.setProperty("--bs", c ? Math.max(c.s, 30) : 60);
+}
+
+/* =========================================================
+   9. PROFILO E MENU
+   Il profilo (nome, emoji, colore) è salvato nel database:
+     utenti/{uid}/stato/profilo { nome, emoji, colore }
+   ========================================================= */
+
+const EMOJI_PROFILO = ["🎒", "🦈", "🚀", "🐙", "🦊", "🐼", "⚡️", "🌵", "🎧", "🛹", "🌈", "👾"];
+const COLORI_PROFILO = [80, 150, 190, 220, 265, 300, 340, 20, 45];
+
+function profilo() {
+  const p = dati.profilo || {};
+  const email = (utente && utente.email) || "";
+  const nome = p.nome || email.split("@")[0] || "Tu";
+  // colore predefinito ricavato dall'email, così è sempre lo stesso
+  const hash = [...email].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
+  return { nome, emoji: p.emoji || "", colore: p.colore ?? COLORI_PROFILO[hash % COLORI_PROFILO.length], email };
+}
+
+function avatarHtml(dim = 56) {
+  const p = profilo();
+  const iniziali = p.nome.split(/\s+/).map(x => x[0]).join("").slice(0, 2).toUpperCase();
+  return `<span class="avatar" style="--dim:${dim}px;--avatar-h:${p.colore}">${p.emoji ? p.emoji : `<span class="iniziali">${esc(iniziali)}</span>`}</span>`;
+}
+
+function medaglie() {
+  const n = dati.oggetti.length;
+  const conFoto = dati.oggetti.filter(o => urlFoto.has(o.id)).length;
+  const fuori = dati.oggetti.filter(o => !o.tascaId).length;
+  return [
+    ["🎒", "Primo zaino", "Crea uno zaino", dati.zaini.length >= 1],
+    ["🗂️", "Organizzato", "5 tasche o più", dati.tasche.length >= 5],
+    ["📦", "Collezionista", "10 oggetti", n >= 10],
+    ["📸", "Fotografo", "Tutti con foto", n > 0 && conFoto === n],
+    ["🧭", "Tutto a posto", "Niente fuori", n > 0 && fuori === 0],
+    ["🌈", "Arcobaleno", "5 colori diversi", new Set([...coloreFoto.values()].map(c => Math.round(c.h / 40))).size >= 5]
+  ];
+}
+
+function vistaProfilo() {
+  const p = profilo();
+  const n = dati.oggetti.length;
+  const dentro = dati.oggetti.filter(o => o.tascaId).length;
+  const percentuale = n ? Math.round((dentro / n) * 100) : 0;
+  const conFoto = dati.oggetti.filter(o => urlFoto.has(o.id));
+  const lista = medaglie();
+  return {
+    titolo: "Profilo",
+    html: `
+      <div class="profilo-testa" style="--avatar-h:${p.colore}">
+        ${avatarHtml(112)}
+        <div class="profilo-nome">${esc(p.nome)}</div>
+        <div class="profilo-email">${esc(p.email)}</div>
+        <div class="profilo-modifica"><button class="btn tenue" data-azione="modifica-profilo">Modifica profilo</button></div>
+      </div>
+
+      <div class="anello-riga" style="--i:1">
+        <div class="anello-valore"><div class="anello" style="--p:${percentuale}"></div><b>${percentuale}%</b></div>
+        <div class="anello-testo"><b>${percentuale === 100 && n ? "Tutto al suo posto!" : "Nello zaino"}</b>
+          <span>${dentro} su ${plurale(n, "oggetto", "oggetti")} sono in una tasca</span></div>
+      </div>
+
+      <div class="stats">
+        <div class="stat" style="--i:2"><b>${dati.zaini.length}</b><span>${dati.zaini.length === 1 ? "zaino" : "zaini"}</span></div>
+        <div class="stat" style="--i:3"><b>${dati.tasche.length}</b><span>tasche</span></div>
+        <div class="stat" style="--i:4"><b>${n}</b><span>oggetti</span></div>
+      </div>
+
+      ${conFoto.length ? `
+      <h2>La tua collezione</h2>
+      <div class="collezione">${conFoto.map((o, i) =>
+        `<span class="tinta" style="${tinta(o.id)}--i:${i}"><img src="${urlFoto.get(o.id)}" alt="${esc(o.nome)}"></span>`).join("")}</div>` : ""}
+
+      <h2>Traguardi · ${lista.filter(m => m[3]).length}/${lista.length}</h2>
+      <div class="medaglie">${lista.map(([emoji, titolo, descr, ok], i) => `
+        <div class="medaglia ${ok ? "ottenuta" : ""}" style="--i:${i + 5}">
+          <span class="emoji">${emoji}</span><span><b>${titolo}</b><small>${descr}</small></span></div>`).join("")}</div>`
+  };
+}
+
+function apriModificaProfilo() {
+  const p = profilo();
+  apriSheet(`
+    <form data-azione="salva-profilo" autocomplete="off">
+      <div class="sheet-barra">
+        <button type="button" class="btn-nav" data-azione="chiudi-sheet">Annulla</button>
+        <b>Profilo</b>
+        <button class="btn-nav">Fine</button>
+      </div>
+      <ul class="lista senza-mini">
+        <li class="campo"><input name="nome" value="${esc(p.nome)}" placeholder="Il tuo nome" maxlength="40" enterkeyhint="done"></li>
+      </ul>
+      <h2>Avatar</h2>
+      <div class="scelta-emoji">
+        <label><input type="radio" name="emoji" value="" ${p.emoji ? "" : "checked"}><span class="iniziali" style="font:800 18px var(--titoli)">Aa</span></label>
+        ${EMOJI_PROFILO.map(e => `<label><input type="radio" name="emoji" value="${e}" ${p.emoji === e ? "checked" : ""}><span>${e}</span></label>`).join("")}
+      </div>
+      <h2>Colore</h2>
+      <div class="scelta-colore">
+        ${COLORI_PROFILO.map(c => `<label style="--c:${c}"><input type="radio" name="colore" value="${c}" ${p.colore === c ? "checked" : ""}></label>`).join("")}
+      </div>
+    </form>`);
+}
+
+function salvaProfilo(form) {
+  const nuovo = {
+    id: "profilo",
+    nome: form.nome.value.trim().slice(0, 40),
+    emoji: form.emoji.value,
+    colore: Number(form.colore.value || profilo().colore)
+  };
+  dati.profilo = { nome: nuovo.nome, emoji: nuovo.emoji, colore: nuovo.colore };
+  salvaDoc("stato", nuovo);
+  chiudiSheet();
+  render();
+}
+
+/* ---------- Menu laterale ---------- */
+function apriMenu() {
+  if (document.getElementById("menu")) return;
+  const p = profilo();
+  const [, sezione = ""] = (location.hash || "#/").split("/");
+  const voce = (href, icona, testo, attiva, i, conta = "") =>
+    `<a class="menu-voce ${attiva ? "attiva" : ""}" href="${href}" style="--i:${i}">${ico(icona, 24, 1.9)}${testo}${conta !== "" ? `<span class="conta">${conta}</span>` : ""}</a>`;
+  const el = document.createElement("div");
+  el.id = "menu";
+  el.className = "menu";
+  el.innerHTML = `
+    <div class="menu-velo" data-azione-menu="chiudi"></div>
+    <nav class="menu-pannello" style="--avatar-h:${p.colore}">
+      <a class="menu-profilo" href="#/profilo">${avatarHtml(60)}<span><b>${esc(p.nome)}</b><small>${esc(p.email)}</small></span></a>
+      ${voce("#/", "zaino", "Zaini", ["", "zaino", "tasca"].includes(sezione), 0, dati.zaini.length)}
+      ${voce("#/inventario", "scatola", "Inventario", ["inventario", "oggetto"].includes(sezione), 1, dati.oggetti.length)}
+      ${voce("#/profilo", "utente", "Profilo e traguardi", sezione === "profilo", 2)}
+      ${voce("#/impostazioni", "regola", "Impostazioni", sezione === "impostazioni", 3)}
+      <div class="menu-piede">
+        <button class="menu-voce" data-azione="esci" style="--i:5">${ico("esci", 24, 1.9)}Esci</button>
+        <p class="menu-marchio">Zaino · i tuoi oggetti, sempre a portata</p>
+      </div>
+    </nav>`;
+  document.body.appendChild(el);
+  el.addEventListener("click", e => {
+    if (e.target.closest("[data-azione-menu='chiudi'], a")) chiudiMenu();
+  });
+}
+
+function chiudiMenu() {
+  const el = document.getElementById("menu");
+  if (!el || el.classList.contains("chiude")) return;
+  el.classList.add("chiude");
+  setTimeout(() => el.remove(), 300);
+}

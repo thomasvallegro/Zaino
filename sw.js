@@ -8,7 +8,7 @@
    - Librerie Firebase (versione fissa): prima la copia salvata.
    ========================================================= */
 
-const CACHE = "zaino-v3";
+const CACHE = "zaino-v4";
 const FILE = ["./", "./index.html", "./style.css", "./app.js", "./db.js", "./icona.png", "./manifest.json"];
 
 self.addEventListener("install", e => {

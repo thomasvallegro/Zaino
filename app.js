@@ -173,6 +173,7 @@ const urlFoto = new Map();
 function impostaFoto(id, testo) {
   if (testo) {
     urlFoto.set(id, testo);
+    aggiornaColori();
     return salvaDoc("foto", { id, dati: testo });
   }
   urlFoto.delete(id);
@@ -380,7 +381,9 @@ const ICONE = {
   foto: '<rect x="3" y="6.5" width="18" height="13.5" rx="3"/><circle cx="12" cy="13" r="3.5"/><path d="M8.5 6.5 10 4h4l1.5 2.5"/>',
   nfc: '<path d="M7 8.5a6 6 0 0 1 0 7M10.5 6.5a9 9 0 0 1 0 11M14 4.5a12 12 0 0 1 0 15"/>',
   spunta: '<path d="m5.5 12.5 4 4 9-9"/>',
-  lente: '<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>'
+  lente: '<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>',
+  x: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  esci: '<path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14M9.5 8 5.5 12l4 4M5.5 12H15"/>'
 };
 function ico(nome, dim = 24, spessore = 1.8) {
   return `<svg width="${dim}" height="${dim}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${spessore}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONE[nome]}</svg>`;
@@ -397,16 +400,6 @@ const plurale = (n, uno, tanti) => n + " " + (n === 1 ? uno : tanti);
 function miniatura(id, icona) {
   const url = id && urlFoto.get(id);
   return `<span class="mini">${url ? `<img src="${url}" alt="">` : ico(icona, 22)}</span>`;
-}
-
-function immagineScheda(id, icona) {
-  const url = urlFoto.get(id);
-  return `<div class="card-img">${url ? `<img src="${url}" alt="" loading="lazy">` : ico(icona, 48, 1.4)}</div>`;
-}
-
-function hero(id) {
-  const url = urlFoto.get(id);
-  return url ? `<div class="hero"><img src="${url}" alt=""></div>` : "";
 }
 
 function testoStato(oggetto) {
@@ -615,58 +608,156 @@ const pulsantePiu = (tipo, extra = "") =>
 const pulsanteModifica = (tipo, id) =>
   `<button class="btn-nav" data-azione="modifica" data-tipo="${tipo}" data-id="${id}">Modifica</button>`;
 
+/* ---------- Colore dominante delle foto ----------
+   Da ogni foto ricaviamo una tinta (h = tonalità, s = saturazione)
+   usata per colorare la card che la contiene. */
+const coloreFoto = new Map(); // id → { h, s, src }
+const inCalcolo = new Set();
+
+async function calcolaColore(src) {
+  const img = new Image();
+  img.src = src;
+  await img.decode();
+  const c = document.createElement("canvas");
+  c.width = c.height = 24;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, 24, 24);
+  const p = ctx.getImageData(0, 0, 24, 24).data;
+  let r = 0, g = 0, b = 0, peso = 0;
+  for (let i = 0; i < p.length; i += 4) {
+    if (p[i + 3] < 200) continue; // salta lo sfondo trasparente
+    const vivacita = Math.max(p[i], p[i + 1], p[i + 2]) - Math.min(p[i], p[i + 1], p[i + 2]);
+    const w = 1 + vivacita / 24;  // i colori vivaci contano di più
+    r += p[i] * w; g += p[i + 1] * w; b += p[i + 2] * w; peso += w;
+  }
+  if (!peso) return null;
+  r /= peso * 255; g /= peso * 255; b /= peso * 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2;
+  let h = 0, s = 0;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h *= 60;
+  }
+  return { h: Math.round(h), s: Math.round(Math.min(70, Math.max(8, s * 100))) };
+}
+
+function aggiornaColori() {
+  urlFoto.forEach((src, id) => {
+    const noto = coloreFoto.get(id);
+    if ((noto && noto.src === src) || inCalcolo.has(id)) return;
+    inCalcolo.add(id);
+    calcolaColore(src)
+      .then(c => { if (c) { coloreFoto.set(id, { ...c, src }); prenotaRender(); } })
+      .catch(() => {})
+      .finally(() => inCalcolo.delete(id));
+  });
+}
+
+const tinta = id => {
+  const c = coloreFoto.get(id);
+  return c ? `--h:${c.h};--s:${c.s};` : "";
+};
+
+// Foto con "nome di transizione": vola da una schermata all'altra
+function fotoAnimata(id, icona, dimIcona = 56) {
+  const url = urlFoto.get(id);
+  return url
+    ? `<img src="${url}" alt="" style="view-transition-name:f-${id}">`
+    : `<span class="segnaposto-ico">${ico(icona, dimIcona, 1.3)}</span>`;
+}
+
+/* ---------- Card di un oggetto ---------- */
+function cardOggetto(o, i, sotto, conTogli = false) {
+  const card = `
+    <a class="card-ogg card-anim tinta ${o.tascaId ? "" : "fuori"}" href="#/oggetto/${o.id}"
+       style="${tinta(o.id)}--i:${i}" data-nome="${esc(o.nome.toLowerCase())}" data-stato="${o.tascaId ? "dentro" : "fuori"}">
+      <div class="card-ogg-img">${fotoAnimata(o.id, "scatola")}</div>
+      <div class="card-ogg-testo">
+        <b>${esc(o.nome)}</b>
+        <span class="pill ${o.tascaId ? "dentro" : ""}">${esc(sotto)}</span>
+      </div>
+    </a>`;
+  return conTogli
+    ? `<div class="card-wrap" style="--i:${i}">${card}
+         <button class="btn-togli" data-azione="togli" data-id="${o.id}" aria-label="Togli ${esc(o.nome)}">${ico("x", 16, 2.6)}</button></div>`
+    : card;
+}
+
+const nomeTascaBreve = o => (o.tascaId && trovaTasca(o.tascaId) ? trovaTasca(o.tascaId).nome : "Fuori");
+
+/* ---------- Schermate ---------- */
 function vistaZaini() {
   const zaini = [...dati.zaini].sort(perNome);
-  const schede = zaini.map(z => `
-    <a class="card" href="#/zaino/${z.id}">
-      ${immagineScheda(z.id, "zaino")}
-      <div class="card-testo"><b>${esc(z.nome)}</b>
-        <small>${plurale(oggettiInZaino(z.id).length, "oggetto", "oggetti")} · ${plurale(tascheDi(z.id).length, "tasca", "tasche")}</small></div>
-    </a>`).join("");
+  const schede = zaini.map((z, i) => {
+    const contenuto = oggettiInZaino(z.id);
+    const avatar = contenuto.slice(0, 4).map(o =>
+      `<span>${urlFoto.get(o.id) ? `<img src="${urlFoto.get(o.id)}" alt="">` : ico("scatola", 16, 1.8)}</span>`).join("");
+    const extra = contenuto.length > 4 ? `<span class="piu">+${contenuto.length - 4}</span>` : "";
+    return `
+      <a class="card-zaino card-anim tinta" href="#/zaino/${z.id}" style="${tinta(z.id)}--i:${i}">
+        <div class="card-zaino-img">${fotoAnimata(z.id, "zaino", 88)}</div>
+        <div class="card-zaino-info">
+          <div><b>${esc(z.nome)}</b>
+            <span>${plurale(contenuto.length, "oggetto", "oggetti")} · ${plurale(tascheDi(z.id).length, "tasca", "tasche")}</span></div>
+          <div class="avatar-stack">${avatar}${extra}</div>
+        </div>
+      </a>`;
+  }).join("");
   return {
     titolo: "Zaini",
     destra: pulsantePiu("zaino"),
-    html: zaini.length ? `<div class="griglia">${schede}</div>` : `
+    html: zaini.length ? `<div class="griglia-zaini">${schede}</div>` : `
       <div class="vuoto">${ico("zaino", 64, 1.2)}<b>Nessuno zaino</b>
         <span>Crea il tuo primo zaino, poi aggiungi le tasche.</span>
         <button class="btn" data-azione="nuovo" data-tipo="zaino">Crea zaino</button></div>`
   };
 }
 
+const tascaScelta = new Map(); // zainoId → tascaId selezionata nei filtri
+
 function vistaZaino(id) {
   const zaino = trovaZaino(id);
   if (!zaino) return nonTrovato();
   const tasche = tascheDi(id).sort(perNome);
-  const righeTasche = tasche.map(t => `
-    <li><a class="riga" href="#/tasca/${t.id}">
-      ${miniatura(null, "tasca")}
-      <span class="riga-testo"><span>${esc(t.nome)}</span></span>
-      <span class="valore">${oggettiIn(t.id).length}</span>${ico("avanti", 18, 2.2).replace("<svg", '<svg class="chevron"')}
-    </a></li>`).join("");
-
   const contenuto = oggettiInZaino(id).sort(perNome);
-  const righeContenuto = contenuto.map(o => `
-    <li><a class="riga" href="#/oggetto/${o.id}">
-      ${miniatura(o.id, "scatola")}
-      <span class="riga-testo"><span>${esc(o.nome)}</span><small>${esc(trovaTasca(o.tascaId).nome)}</small></span>
-      ${ico("avanti", 18, 2.2).replace("<svg", '<svg class="chevron"')}
-    </a></li>`).join("");
+  let scelta = tascaScelta.get(id);
+  if (scelta && !trovaTasca(scelta)) scelta = null;
+  const visibili = scelta ? contenuto.filter(o => o.tascaId === scelta) : contenuto;
+  const piena = tasche.reduce((m, t) => (!m || oggettiIn(t.id).length > oggettiIn(m.id).length ? t : m), null);
+
+  const chip = (tascaId, nome, n, i) =>
+    `<button class="chip ${scelta === tascaId || (!scelta && !tascaId) ? "attivo" : ""}" style="--i:${i}"
+       data-azione="scegli-tasca" data-zaino="${id}" data-tasca="${tascaId || ""}">${esc(nome)}<span class="num">${n}</span></button>`;
 
   return {
     titolo: zaino.nome,
     indietro: { href: "#/", testo: "Zaini" },
     destra: pulsanteModifica("zaino", id),
     html: `
-      ${hero(id)}
+      <div class="hero2 tinta" style="${tinta(id)}">${fotoAnimata(id, "zaino", 110)}</div>
+      <div class="stats">
+        <div class="stat"><b>${contenuto.length}</b><span>${contenuto.length === 1 ? "oggetto" : "oggetti"}</span></div>
+        <div class="stat"><b>${tasche.length}</b><span>${tasche.length === 1 ? "tasca" : "tasche"}</span></div>
+        <div class="stat"><b class="piccolo">${piena && oggettiIn(piena.id).length ? esc(piena.nome) : "—"}</b><span>la più piena</span></div>
+      </div>
+
       <h2>Tasche</h2>
-      <ul class="lista">
-        ${righeTasche}
-        <li><button class="riga aggiungi" data-azione="nuovo" data-tipo="tasca" data-zaino="${id}">
-          ${miniatura(null, "piu")}<span class="riga-testo"><span>Aggiungi tasca</span></span></button></li>
-      </ul>
-      <h2>Contenuto · ${plurale(contenuto.length, "oggetto", "oggetti")}</h2>
-      ${contenuto.length ? `<ul class="lista">${righeContenuto}</ul>` :
-        `<ul class="lista"><li class="vuoto-riga">Lo zaino è vuoto.</li></ul>`}`
+      <div class="chips">
+        ${chip(null, "Tutte", contenuto.length, 0)}
+        ${tasche.map((t, i) => chip(t.id, t.nome, oggettiIn(t.id).length, i + 1)).join("")}
+        <button class="chip aggiungi" data-azione="nuovo" data-tipo="tasca" data-zaino="${id}">${ico("piu", 18, 2.2)} Tasca</button>
+      </div>
+      ${scelta ? `
+      <a class="barra-tasca" href="#/tasca/${scelta}">
+        ${ico("tasca", 22, 1.8)}<span><span>Apri <b>${esc(trovaTasca(scelta).nome)}</b></span><small>Metti oggetti, tag NFC, modifica</small></span>
+        ${ico("avanti", 18, 2.2)}</a>` : ""}
+
+      ${visibili.length
+        ? `<div class="griglia-ogg">${visibili.map((o, i) => cardOggetto(o, i, nomeTascaBreve(o))).join("")}</div>`
+        : `<div class="vuoto piccolo">${ico("scatola", 48, 1.2)}<span>${scelta ? "Questa tasca è vuota." : "Lo zaino è vuoto."}</span>
+            ${scelta ? `<button class="btn" data-azione="metti-qui" data-id="${scelta}">Metti oggetti</button>` : ""}</div>`}`
   };
 }
 
@@ -675,26 +766,17 @@ function vistaTasca(id) {
   if (!tasca) return nonTrovato();
   const zaino = trovaZaino(tasca.zainoId);
   const dentro = oggettiIn(id).sort(perNome);
-
-  const righe = dentro.map(o => `
-    <li><div class="riga">
-      <a class="riga-testo" href="#/oggetto/${o.id}" style="flex-direction:row;align-items:center;gap:12px;color:inherit;text-decoration:none">
-        ${miniatura(o.id, "scatola")}<span class="riga-testo"><span>${esc(o.nome)}</span></span></a>
-      <button class="btn-piccolo" data-azione="togli" data-id="${o.id}">Togli</button>
-    </div></li>`).join("");
-
   return {
     titolo: tasca.nome,
     indietro: { href: "#/zaino/" + tasca.zainoId, testo: zaino ? zaino.nome : "Zaino" },
     destra: pulsanteModifica("tasca", id),
     html: `
-      <p class="sottotitolo">${esc(zaino ? zaino.nome : "")}</p>
-      <h2>Contenuto</h2>
-      <ul class="lista">
-        ${righe || `<li class="vuoto-riga">Tasca vuota.</li>`}
-        <li><button class="riga aggiungi" data-azione="metti-qui" data-id="${id}">
-          ${miniatura(null, "piu")}<span class="riga-testo"><span>Metti oggetti</span></span></button></li>
-      </ul>
+      <p class="sottotitolo">${esc(zaino ? zaino.nome : "")} · ${plurale(dentro.length, "oggetto", "oggetti")}</p>
+      <div class="griglia-ogg">
+        ${dentro.map((o, i) => cardOggetto(o, i, "In questa tasca", true)).join("")}
+        <button class="card-metti" data-azione="metti-qui" data-id="${id}" style="--i:${dentro.length}">
+          ${ico("piu", 34, 1.8)}<span>Metti oggetti</span></button>
+      </div>
       ${bloccoTag("t", id)}`
   };
 }
@@ -703,22 +785,16 @@ let filtroInventario = "tutti";
 
 function vistaInventario() {
   const oggetti = [...dati.oggetti].sort(perNome);
-  const schede = oggetti.map(o => `
-    <a class="card" href="#/oggetto/${o.id}" data-nome="${esc(o.nome.toLowerCase())}" data-stato="${o.tascaId ? "dentro" : "fuori"}">
-      ${immagineScheda(o.id, "scatola")}
-      <div class="card-testo"><b>${esc(o.nome)}</b><small class="stato ${o.tascaId ? "dentro" : ""}">${esc(o.tascaId ? trovaTasca(o.tascaId).nome : "Fuori")}</small></div>
-    </a>`).join("");
   const nDentro = oggetti.filter(o => o.tascaId).length;
   const seg = (val, testo) =>
     `<button class="${filtroInventario === val ? "attivo" : ""}" data-azione="filtro" data-valore="${val}">${testo}</button>`;
-
   return {
     titolo: "Inventario",
     destra: pulsantePiu("oggetto"),
     html: oggetti.length ? `
       <label class="cerca">${ico("lente", 18, 2)}<input id="cerca" type="search" placeholder="Cerca" enterkeyhint="search"></label>
       <div class="segmenti">${seg("tutti", "Tutti " + oggetti.length)}${seg("dentro", "Dentro " + nDentro)}${seg("fuori", "Fuori " + (oggetti.length - nDentro))}</div>
-      <div class="griglia" id="griglia-oggetti">${schede}</div>
+      <div class="griglia-ogg" id="griglia-oggetti">${oggetti.map((o, i) => cardOggetto(o, i, nomeTascaBreve(o))).join("")}</div>
       <p class="nota centro" id="nessun-risultato" hidden>Nessun oggetto trovato.</p>` : `
       <div class="vuoto">${ico("scatola", 64, 1.2)}<b>Inventario vuoto</b>
         <span>Aggiungi gli oggetti che porti nello zaino.</span>
@@ -733,7 +809,7 @@ function applicaFiltri() {
   if (!griglia) return;
   const q = campo ? campo.value.trim().toLowerCase() : "";
   let visibili = 0;
-  griglia.querySelectorAll(".card").forEach(c => {
+  griglia.querySelectorAll(".card-ogg").forEach(c => {
     const ok = c.dataset.nome.includes(q) && (filtroInventario === "tutti" || c.dataset.stato === filtroInventario);
     c.hidden = !ok;
     if (ok) visibili++;
@@ -744,19 +820,29 @@ function applicaFiltri() {
 function vistaOggetto(id) {
   const oggetto = trovaOggetto(id);
   if (!oggetto) return nonTrovato();
+  const tasca = oggetto.tascaId && trovaTasca(oggetto.tascaId);
+  const zaino = tasca && trovaZaino(tasca.zainoId);
   return {
     titolo: oggetto.nome,
     indietro: { href: "#/inventario", testo: "Inventario" },
     destra: pulsanteModifica("oggetto", id),
     html: `
-      ${hero(id)}
-      <h2>Posizione</h2>
-      <ul class="lista senza-mini">
-        <li class="campo">${testoStato(oggetto)}</li>
+      <div class="hero2 tinta ${tasca ? "" : "fuori"}" style="${tinta(id)}">${fotoAnimata(id, "scatola", 110)}</div>
+
+      <a class="posizione ${tasca ? "dentro" : ""}" ${tasca ? `href="#/tasca/${tasca.id}"` : ""}>
+        <span class="posizione-ico">${ico(tasca ? "tasca" : "esci", 26, 1.8)}</span>
+        <span class="posizione-testo">
+          <small>${tasca ? "Si trova in " + esc(zaino ? zaino.nome : "") : "Non è nello zaino"}</small>
+          <b>${tasca ? esc(tasca.nome) : "Fuori"}</b>
+        </span>
+        ${tasca ? ico("avanti", 18, 2.2) : ""}
+      </a>
+
+      <ul class="lista senza-mini" style="margin-top:12px">
         <li class="campo"><label for="sposta">Sposta in</label>
           <select id="sposta" data-azione="sposta-oggetto" data-id="${id}">${opzioniPosizione(oggetto.tascaId)}</select></li>
       </ul>
-      ${oggetto.tascaId ? `<div class="spazio"></div><button class="btn tenue" data-azione="togli" data-id="${id}">Togli dallo zaino</button>` : ""}
+      ${tasca ? `<div class="spazio"></div><button class="btn tenue" data-azione="togli" data-id="${id}">Togli dallo zaino</button>` : ""}
       ${bloccoTag("o", id)}`
   };
 }
@@ -830,6 +916,7 @@ function nonTrovato() {
 
 /* ---------- Disegno della schermata ---------- */
 let ultimaVista = "";
+let animaProssimo = false; // forza l'animazione di entrata (es. cambio filtro)
 
 function render() {
   const [, sezione = "", id] = (location.hash || "#/").split("/");
@@ -873,7 +960,10 @@ function render() {
   document.getElementById("app").innerHTML =
     `<h1 class="titolo-grande">${esc(vista.titolo)}</h1>${vista.html}`;
   const chiave = sezione + "/" + (id || "");
-  if (chiave !== ultimaVista) { window.scrollTo(0, 0); ultimaVista = chiave; }
+  const nuovaVista = chiave !== ultimaVista;
+  document.getElementById("app").classList.toggle("anima", nuovaVista || animaProssimo);
+  animaProssimo = false;
+  if (nuovaVista) { window.scrollTo(0, 0); ultimaVista = chiave; }
   else if (document.getElementById("cerca")) document.getElementById("cerca").value = testoRicerca;
   applicaFiltri();
   aggiornaScroll();
@@ -1000,6 +1090,11 @@ document.addEventListener("click", async e => {
       return;
     case "filtro":
       filtroInventario = el.dataset.valore;
+      animaProssimo = true;
+      break;
+    case "scegli-tasca":
+      tascaScelta.set(el.dataset.zaino, el.dataset.tasca || null);
+      animaProssimo = true;
       break;
     case "copia":
       copia(el.dataset.testo);
@@ -1203,6 +1298,7 @@ function quandoArrivanoDati(collezione, elementi) {
   if (collezione === "foto") {
     urlFoto.clear();
     elementi.forEach(f => urlFoto.set(f.id, f.dati));
+    aggiornaColori();
   } else if (collezione === "stato") {
     const ta = elementi.find(x => x.id === "tascaAttiva");
     dati.tascaAttiva = ta ? { tascaId: ta.tascaId, scade: ta.scade } : null;
@@ -1234,7 +1330,37 @@ cloud.osservaUtente(u => {
   render();
 });
 
-window.addEventListener("hashchange", () => { chiudiSheet(); render(); });
+// Cambio schermata con transizione animata (se il browser la supporta)
+const movimentoRidotto = matchMedia("(prefers-reduced-motion: reduce)");
+window.addEventListener("hashchange", () => {
+  chiudiSheet();
+  if (document.startViewTransition && !movimentoRidotto.matches && caricato) {
+    document.startViewTransition(() => render());
+  } else render();
+});
+
+/* ---------- Effetto 3D al tocco delle card ----------
+   La card si inclina verso il punto toccato e mostra un riflesso. */
+document.addEventListener("pointerdown", e => {
+  const card = e.target.closest(".card-anim");
+  if (!card || e.target.closest(".btn-togli") || movimentoRidotto.matches) return;
+  const r = card.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+  card.style.setProperty("--ry", ((x - 0.5) * 12).toFixed(1) + "deg");
+  card.style.setProperty("--rx", ((0.5 - y) * 12).toFixed(1) + "deg");
+  card.style.setProperty("--mx", (x * 100).toFixed(0) + "%");
+  card.style.setProperty("--my", (y * 100).toFixed(0) + "%");
+  card.classList.add("premuto");
+}, { passive: true });
+function rilasciaCard() {
+  document.querySelectorAll(".card-anim.premuto").forEach(c => {
+    c.classList.remove("premuto");
+    c.style.removeProperty("--rx");
+    c.style.removeProperty("--ry");
+  });
+}
+["pointerup", "pointercancel"].forEach(ev => document.addEventListener(ev, rilasciaCard, { passive: true }));
+window.addEventListener("scroll", rilasciaCard, { passive: true });
 setInterval(renderBanner, 1000); // aggiorna il conto alla rovescia
 
 leggiDatiLocali();

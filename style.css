@@ -81,7 +81,7 @@ body.scrollato .nav-titolo { opacity: 1; }
 .btn-nav.tondo { width: 44px; justify-content: center; }
 .link-nav:active, .btn-nav:active { opacity: .4; }
 
-main { padding: 0 16px 24px; max-width: 700px; margin: 0 auto; }
+main { padding: 0 16px 24px; max-width: 1040px; margin: 0 auto; }
 
 .titolo-grande {
   font-size: 34px; font-weight: 700; letter-spacing: .01em; line-height: 1.15;
@@ -358,4 +358,237 @@ select option, select optgroup { direction: ltr; }
 .caricamento::before {
   content: ""; width: 30px; height: 30px; border-radius: 50%;
   border: 3px solid var(--carta-2); border-top-color: var(--secondario); animation: gira .8s linear infinite;
+}
+
+/* =========================================================
+   CARD ANIMATE
+   Ogni card ha una tinta (--h tonalità, --s saturazione)
+   ricavata dalla foto. Senza foto: grigio-blu neutro.
+   ========================================================= */
+.tinta {
+  --h: 220; --s: 10;
+  background:
+    radial-gradient(120% 90% at 50% 20%, hsl(var(--h) calc(var(--s) * 1%) 97%), transparent 70%),
+    linear-gradient(165deg, hsl(var(--h) calc(var(--s) * 1%) 93%), hsl(var(--h) calc(var(--s) * 1%) 84%));
+}
+@media (prefers-color-scheme: dark) {
+  .tinta {
+    background:
+      radial-gradient(120% 90% at 50% 20%, hsl(var(--h) calc(var(--s) * 1%) 30%), transparent 70%),
+      linear-gradient(165deg, hsl(var(--h) calc(var(--s) * 1%) 22%), hsl(var(--h) calc(var(--s) * 1%) 12%));
+  }
+}
+
+/* Inclinazione 3D + riflesso al tocco (vedi app.js) */
+.card-anim {
+  position: relative; isolation: isolate; overflow: hidden;
+  color: inherit; text-decoration: none;
+  transform: perspective(800px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) scale(var(--sc, 1));
+  transition: transform .45s cubic-bezier(.2, .8, .2, 1), box-shadow .45s;
+  box-shadow: 0 1px 2px rgba(0,0,0,.05), 0 14px 28px -16px hsl(var(--h, 220) 40% 25% / .55);
+  -webkit-touch-callout: none;
+}
+.card-anim::after {
+  content: ""; position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(255,255,255,.6), transparent 55%);
+  opacity: 0; transition: opacity .4s;
+}
+.card-anim.premuto { --sc: .965; transition-duration: .15s; }
+.card-anim.premuto::after { opacity: .7; transition-duration: .1s; }
+
+/* Oggetti che fluttuano piano, ognuno con il suo ritmo */
+@keyframes fluttua {
+  0%, 100% { transform: translateY(0) rotate(-1.5deg); }
+  50%      { transform: translateY(-7px) rotate(1.5deg); }
+}
+/* Entrata a cascata quando si apre una schermata */
+@keyframes entra {
+  from { opacity: 0; transform: translateY(22px) scale(.94); }
+}
+main.anima .card-anim, main.anima .card-wrap, main.anima .card-metti,
+main.anima .chip, main.anima .stat, main.anima .hero2 {
+  animation: entra .55s cubic-bezier(.2, .8, .2, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 50ms);
+}
+main.anima .card-wrap .card-anim { animation: none; }
+
+/* ---------- Griglie ---------- */
+.griglia-ogg {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+}
+.griglia-zaini {
+  display: grid; gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+}
+
+/* ---------- Card oggetto ---------- */
+.card-ogg { display: flex; flex-direction: column; border-radius: 24px; }
+.card-ogg-img {
+  aspect-ratio: 1; display: grid; place-items: center; position: relative;
+}
+/* alone colorato dietro l'oggetto */
+.card-ogg-img::before, .hero2::before, .card-zaino-img::before {
+  content: ""; position: absolute; z-index: -1; width: 62%; height: 62%; border-radius: 50%;
+  background: hsl(var(--h, 220) calc(var(--s, 10) * 1.3%) 62% / .45); filter: blur(26px);
+}
+.card-ogg-img img {
+  width: 76%; height: 76%; object-fit: contain;
+  filter: drop-shadow(0 14px 14px rgba(0,0,0,.22));
+  animation: fluttua 5.5s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * -1.3s);
+}
+.segnaposto-ico { color: hsl(var(--h, 220) 15% 55%); display: grid; place-items: center; }
+.card-ogg-testo { padding: 0 14px 14px; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.card-ogg-testo b {
+  font-size: 16px; font-weight: 650; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  margin-top: 6px; padding: 3px 10px 3px 8px; border-radius: 20px;
+  font-size: 12px; font-weight: 600; color: var(--secondario);
+  background: rgba(255,255,255,.62);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--terziario); flex-shrink: 0; }
+.pill.dentro { color: var(--testo); }
+.pill.dentro::before { background: var(--ok); box-shadow: 0 0 0 3px rgba(52,199,89,.2); }
+@media (prefers-color-scheme: dark) { .pill { background: rgba(0,0,0,.3); } }
+
+/* Oggetti fuori dallo zaino: sbiaditi */
+.fuori .card-ogg-img img, .hero2.fuori img { filter: grayscale(.7) drop-shadow(0 10px 10px rgba(0,0,0,.15)); opacity: .6; }
+
+/* Card con pulsante "togli" (schermata tasca) */
+.card-wrap { position: relative; }
+.card-wrap .card-ogg { height: 100%; }
+.btn-togli {
+  position: absolute; top: 8px; right: 8px; z-index: 4;
+  width: 30px; height: 30px; border-radius: 50%; border: none; cursor: pointer;
+  display: grid; place-items: center; color: var(--testo);
+  background: rgba(255,255,255,.7); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  box-shadow: 0 2px 8px rgba(0,0,0,.12);
+}
+.btn-togli:active { transform: scale(.88); }
+@media (prefers-color-scheme: dark) { .btn-togli { background: rgba(60,60,64,.75); } }
+
+.card-metti {
+  border: 2px dashed var(--terziario); border-radius: 24px; background: transparent;
+  color: var(--accento); font: inherit; font-weight: 600; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  min-height: 200px;
+}
+.card-metti:active { background: var(--carta-2); }
+
+/* ---------- Card zaino ---------- */
+.card-zaino { display: flex; flex-direction: column; border-radius: 30px; }
+.card-zaino-img { height: 250px; display: grid; place-items: center; position: relative; }
+.card-zaino-img img {
+  position: absolute; inset: 7% 15%; width: 70%; height: 86%; object-fit: contain;
+  filter: drop-shadow(0 18px 18px rgba(0,0,0,.28));
+  animation: fluttua 6s ease-in-out infinite;
+}
+.card-zaino-info {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 12px;
+  padding: 0 18px 18px;
+}
+.card-zaino-info > div:first-child { min-width: 0; display: flex; flex-direction: column; }
+.card-zaino-info b { font-size: 22px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-zaino-info span { color: var(--secondario); font-size: 14px; }
+.avatar-stack { display: flex; padding-left: 10px; flex-shrink: 0; }
+.avatar-stack > span {
+  width: 36px; height: 36px; margin-left: -10px; border-radius: 50%;
+  display: grid; place-items: center; overflow: hidden;
+  background: var(--carta); border: 2px solid hsl(var(--h, 220) calc(var(--s, 10) * 1%) 86%);
+  color: var(--secondario); font-size: 12px; font-weight: 700;
+}
+.avatar-stack img { width: 80%; height: 80%; object-fit: contain; }
+@media (prefers-color-scheme: dark) { .avatar-stack > span { border-color: hsl(var(--h, 220) calc(var(--s, 10) * 1%) 14%); } }
+
+/* ---------- Immagine grande (zaino / oggetto) ---------- */
+.hero2 {
+  position: relative; isolation: isolate; overflow: hidden;
+  height: 300px; margin: 8px 0 4px; border-radius: 30px;
+  display: grid; place-items: center;
+}
+.hero2::before { width: 55%; height: 55%; filter: blur(40px); }
+.hero2 img {
+  position: absolute; inset: 9% 15%; width: 70%; height: 82%; object-fit: contain;
+  filter: drop-shadow(0 22px 22px rgba(0,0,0,.3));
+  animation: fluttua 6.5s ease-in-out infinite;
+}
+
+/* Riquadri con i numeri */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+.stat {
+  background: var(--carta); border-radius: 20px; padding: 12px 14px; min-width: 0;
+  box-shadow: var(--ombra); display: flex; flex-direction: column;
+}
+.stat b { font-size: 28px; font-weight: 700; line-height: 1.1; }
+.stat b.piccolo { font-size: 17px; line-height: 1.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat span { font-size: 13px; color: var(--secondario); }
+
+/* Tasche come pillole scorrevoli */
+.chips {
+  display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none;
+  margin: 0 -16px; padding: 2px 16px 14px;
+}
+.chips::-webkit-scrollbar { display: none; }
+.chip {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 8px 8px 15px; border: none; border-radius: 22px; cursor: pointer;
+  font: inherit; font-size: 15px; font-weight: 500;
+  background: var(--carta); color: var(--testo); box-shadow: var(--ombra);
+  transition: transform .2s, background .25s, color .25s;
+}
+.chip .num {
+  min-width: 24px; height: 24px; padding: 0 7px; border-radius: 12px;
+  display: grid; place-items: center; font-size: 13px; font-weight: 600;
+  background: var(--carta-2); color: var(--secondario);
+}
+.chip.attivo { background: var(--testo); color: var(--sfondo); }
+.chip.attivo .num { background: rgba(128,128,128,.35); color: inherit; }
+.chip.aggiungi { color: var(--accento); padding-right: 15px; gap: 4px; }
+.chip:active { transform: scale(.94); }
+
+.barra-tasca {
+  display: flex; align-items: center; gap: 12px; margin: 0 0 14px; padding: 12px 16px;
+  border-radius: 18px; background: var(--carta); box-shadow: var(--ombra);
+  color: var(--accento); text-decoration: none; animation: entra .4s cubic-bezier(.2,.8,.2,1);
+}
+.barra-tasca > span { flex: 1; display: flex; flex-direction: column; color: var(--testo); }
+.barra-tasca small { color: var(--secondario); font-size: 13px; }
+.barra-tasca:active { opacity: .6; }
+
+.vuoto.piccolo { padding: 28px 24px; }
+
+/* Posizione dell'oggetto */
+.posizione {
+  display: flex; align-items: center; gap: 14px; margin-top: 14px; padding: 14px 16px;
+  border-radius: 20px; background: var(--carta); box-shadow: var(--ombra);
+  color: var(--secondario); text-decoration: none;
+}
+.posizione-ico {
+  width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center;
+  background: var(--carta-2); color: var(--secondario); flex-shrink: 0;
+}
+.posizione.dentro .posizione-ico { background: rgba(52,199,89,.15); color: var(--ok); }
+.posizione-testo { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.posizione-testo small { font-size: 13px; }
+.posizione-testo b { font-size: 20px; color: var(--testo); }
+a.posizione:active { opacity: .7; }
+
+/* ---------- Transizione tra schermate (View Transitions) ---------- */
+.nav { view-transition-name: nav; }
+.tabbar { view-transition-name: tabbar; }
+::view-transition-group(*) { animation-duration: .42s; animation-timing-function: cubic-bezier(.2, .8, .2, 1); }
+::view-transition-old(root) { animation: .25s ease-out both sfuma-via; }
+::view-transition-new(root) { animation: .35s cubic-bezier(.2, .8, .2, 1) both sfuma-dentro; }
+@keyframes sfuma-via { to { opacity: 0; transform: scale(.985); } }
+@keyframes sfuma-dentro { from { opacity: 0; transform: translateY(10px); } }
+
+/* Niente animazioni se l'iPhone ha "Riduci movimento" attivo */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
 }

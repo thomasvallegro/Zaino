@@ -259,8 +259,11 @@ select option, select optgroup { direction: ltr; color: #000; }
   border: 1px solid hsl(var(--h) calc(var(--s) * 1%) 70% / .16);
   transform: perspective(800px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) scale(var(--sc, 1));
   transition: transform .45s var(--morbido), box-shadow .45s, border-color .3s;
-  box-shadow: 0 20px 40px -24px hsl(var(--h) calc(var(--s) * 1%) 40% / .9);
   touch-action: pan-y;
+  /* Ritaglio "forte" sugli angoli arrotondati: Safari non ritaglia con
+     overflow:hidden gli strati animati o sfocati (bagliore, riflessi) */
+  clip-path: inset(0 round var(--raggio));
+  -webkit-clip-path: inset(0 round var(--raggio));
 }
 /* riflesso che segue il dito */
 .card-anim::after {
@@ -406,7 +409,7 @@ body.trascinando { -webkit-user-select: none; user-select: none; }
 .dock-tasca.fuori.bersaglio { background: var(--pericolo); color: #fff; }
 
 /* ---------- Card zaino ---------- */
-.card-zaino { display: flex; flex-direction: column; border-radius: 32px; }
+.card-zaino { display: flex; flex-direction: column; border-radius: 32px; --raggio: 32px; }
 .card-zaino-img { height: 260px; position: relative; isolation: isolate; }
 .card-zaino-img.bagliore::before { width: 62%; }
 .card-zaino-img img {
